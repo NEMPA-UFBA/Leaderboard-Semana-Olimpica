@@ -168,7 +168,7 @@ with st.sidebar:
     st.markdown("**Core Developers**")
     st.markdown("🧠 *Enzo Ribeiro*")
     st.markdown("🧠 *Gabriel Siron*")
-    st.markdown("🧠 *Ikaro Vieira*")
+    st.markdown("🧠 *Ikaro*")
     
     st.write("")
 

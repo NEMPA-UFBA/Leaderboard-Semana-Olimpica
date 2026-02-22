@@ -4,35 +4,7 @@ from database import get_db
 from models import Equipe
 from scoring import calcular_leaderboard
 
-st.set_page_config(page_title="Leaderboard - Batalha Olimpica", page_icon="🏆", layout="wide", initial_sidebar_state="collapsed")
-
-# --- GLOBAL CSS ---
-st.markdown(
-    """
-    <style>
-    @import url('https://fonts.googleapis.com/css2?family=Bebas+Neue&family=Outfit:wght@300;400;600;700&display=swap');
-    .stAppHeader { display: none; }
-    section[data-testid="stMain"] > div { padding-top: 1rem; }
-    </style>
-    """,
-    unsafe_allow_html=True,
-)
-
 db = get_db()
-
-# --- HEADER ---
-st.markdown(
-    """
-    <div style="text-align:center; padding:1rem 0 2rem;">
-        <div style="font-family:'Bebas Neue',sans-serif; font-size:3.5rem; letter-spacing:4px; line-height:1;
-                    background:linear-gradient(135deg,#f7971e,#ffd200); -webkit-background-clip:text;
-                    -webkit-text-fill-color:transparent;">BATALHA OLIMPICA</div>
-        <div style="font-family:'Outfit',sans-serif; color:#666; font-size:0.9rem; letter-spacing:3px;
-                    text-transform:uppercase; margin-top:4px;">Ranking Geral</div>
-    </div>
-    """,
-    unsafe_allow_html=True,
-)
 
 ranking = calcular_leaderboard(db)
 

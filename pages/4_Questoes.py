@@ -3,17 +3,6 @@ import streamlit as st
 from database import get_db
 from models import Regata, Questao
 
-st.set_page_config(page_title="Questoes - Batalha Olimpica", page_icon="📝", layout="wide", initial_sidebar_state="collapsed")
-
-st.markdown(
-    """
-    <style>
-    @import url('https://fonts.googleapis.com/css2?family=Bebas+Neue&family=Outfit:wght@300;400;600;700&display=swap');
-    </style>
-    """,
-    unsafe_allow_html=True,
-)
-
 db = get_db()
 
 regata = db.query(Regata).filter_by(ativa=True).first()

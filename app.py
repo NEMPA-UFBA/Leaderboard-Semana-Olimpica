@@ -71,7 +71,7 @@ with col_title:
     st.markdown('<div class="nav-title">BATALHA OLIMPICA</div>', unsafe_allow_html=True)
 
 with col_nav:
-    nav_cols = st.columns([1, 1, 1, 1])
+    nav_cols = st.columns([1, 1, 1, 1, 1])
     
     if nav_cols[0].button("🏠 HOME", use_container_width=True, 
                           help="Página inicial"):
@@ -91,6 +91,11 @@ with col_nav:
     if nav_cols[3].button("⚙️ ADMIN", use_container_width=True,
                           help="Painel de administrador"):
         st.session_state.current_page = "admin"
+        st.rerun()
+        
+    if nav_cols[4].button("🔒 JUIZ", use_container_width=True,
+                          help="Área de acesso restrito"):
+        st.session_state.current_page = "juiz"
         st.rerun()
 
 st.divider()
@@ -143,6 +148,11 @@ elif st.session_state.current_page == "admin":
     spec = importlib.util.spec_from_file_location("admin_page", "pages/1_Admin.py")
     admin = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(admin)
+
+elif st.session_state.current_page == "juiz":
+    spec = importlib.util.spec_from_file_location("juiz_page", "pages/2_Juiz.py")
+    juiz = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(juiz)
 
 with st.sidebar:
     st.image("assets/images/logo NEMPA.png", width="content")

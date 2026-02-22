@@ -3,8 +3,6 @@ from database import get_db
 from models import User, Equipe, Regata, Questao
 from auth import login_form, require_auth, hash_password
 
-st.set_page_config(page_title="Admin - Batalha Olimpica", page_icon="⚙️", layout="wide", initial_sidebar_state="collapsed")
-
 db = get_db()
 
 if not login_form(db, User):
@@ -14,27 +12,6 @@ user = require_auth(["admin"])
 if not user:
     st.error("Acesso restrito a administradores.")
     st.stop()
-
-# --- HEADER ---
-st.markdown(
-    """
-    <style>
-    @import url('https://fonts.googleapis.com/css2?family=Bebas+Neue&family=Outfit:wght@300;400;600;700&display=swap');
-    </style>
-    <div style="display:flex; align-items:center; justify-content:space-between; padding:0.5rem 0 1.5rem;">
-        <div>
-            <div style="font-family:'Bebas Neue',sans-serif; font-size:2.2rem; letter-spacing:2px;
-                        background:linear-gradient(135deg,#f7971e,#ffd200); -webkit-background-clip:text;
-                        -webkit-text-fill-color:transparent;">PAINEL ADMIN</div>
-        </div>
-    </div>
-    """,
-    unsafe_allow_html=True,
-)
-
-if st.sidebar.button("Sair", use_container_width=True):
-    del st.session_state["user"]
-    st.rerun()
 
 # Initialize form counters for clearing forms after submission
 for key in ["form_juiz", "form_equipe", "form_regata", "form_questao"]:

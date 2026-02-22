@@ -156,15 +156,14 @@ with st.sidebar:
     
     # Core Dev (Technical Acknowledgment)
     st.markdown("**Core Developers**")
+    st.markdown("🧠 *Enzo Ribeiro*")
     st.markdown("🧠 *Gabriel Siron*")
     st.markdown("🧠 *Ikaro Vieira*")
-    st.markdown("🧠 *Enzo Ribeiro*")
     
     st.write("")
 
     # Scientific Devs (Support Team)
     st.markdown("**Scientific Developers**")
-    st.markdown("💻 *Felipe Brasileiro*")
     st.markdown("💻 *Iago Nunes*")
 
     st.divider()

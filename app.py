@@ -6,7 +6,24 @@ import sys
 # Ensure DB is ready (tables + default admin)
 init_db()
 
-st.set_page_config(page_title="Batalha Olimpica", page_icon="🏅", layout="wide", initial_sidebar_state="collapsed")
+st.set_page_config(
+    page_title="Batalha Olimpica",
+    page_icon="🏅",
+    layout="wide",
+    initial_sidebar_state="expanded"
+)
+
+# Desabilitar navegação automática do sidebar
+st.markdown(
+    """
+    <style>
+    [data-testid="stSidebarNav"] {
+        display: none;
+    }
+    </style>
+    """,
+    unsafe_allow_html=True,
+)
 
 # Inicializar página padrão
 if "current_page" not in st.session_state:

@@ -22,6 +22,10 @@ tab_juizes, tab_equipes, tab_regatas, tab_questoes = st.tabs(
     ["⚖️ Juizes", "👥 Equipes", "🏁 Regatas", "📝 Questoes"]
 )
 
+if st.sidebar.button("Sair", use_container_width=True):
+    del st.session_state["user"]
+    st.rerun()
+
 # --- JUIZES ---
 with tab_juizes:
     col_form, col_list = st.columns([1, 1.5], gap="large")

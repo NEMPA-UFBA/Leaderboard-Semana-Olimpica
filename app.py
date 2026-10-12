@@ -100,6 +100,23 @@ with col_nav:
 
 st.divider()
 
+# Render shared sidebar content before pages that may stop execution.
+with st.sidebar:
+    st.image("assets/images/logo NEMPA.png", width="content")
+    st.markdown("### 🏆 The Team (NEMPA)")
+    st.markdown("**Project Lead**")
+    st.markdown("👨‍🏫 *Prof. Dr. Roberto Sant'Anna*")
+    st.write("")
+    st.markdown("**Core Developers**")
+    st.markdown("🧠 *Enzo Ribeiro*")
+    st.markdown("🧠 *Gabriel Siron*")
+    st.markdown("🧠 *Ikaro Vieira*")
+    st.write("")
+    st.markdown("**Scientific Developers**")
+    st.markdown("💻 *Iago Nunes*")
+    st.divider()
+    st.markdown("© 2026 NEMPA - UFBA")
+
 # --- CARREGAR PÁGINA SELECIONADA ---
 if st.session_state.current_page == "home":
     st.markdown(
@@ -107,32 +124,25 @@ if st.session_state.current_page == "home":
         <div style="text-align:center; padding:4rem 1rem;">
             <div style="font-family:'Outfit',sans-serif; color:#999; font-size:1.1rem; margin-top:0.5rem;
                         letter-spacing:2px; text-transform:uppercase;">Semana Olimpica 2026</div>
-            <div style="margin-top:3rem; display:flex; justify-content:center; gap:2rem; flex-wrap:wrap;">
-                <div onclick="document.querySelector('button:nth-child(2)').click();" style="background:linear-gradient(145deg,#1a1a2e,#16213e); border:1px solid #333;
-                            border-radius:16px; padding:2rem 2.5rem; min-width:200px;
-                            transition:border-color 0.2s, transform 0.2s; cursor:pointer;"
-                     onmouseover="this.style.borderColor='#ffd200'; this.style.transform='translateY(-4px)';"
-                     onmouseout="this.style.borderColor='#333'; this.style.transform='translateY(0)';">
-                    <div style="font-family:'Bebas Neue',sans-serif; font-size:1.8rem; color:#ffd200;
-                                letter-spacing:2px;">LEADERBOARD</div>
-                    <div style="font-family:'Outfit',sans-serif; color:#888; font-size:0.85rem; margin-top:4px;">
-                        Ranking em tempo real</div>
-                </div>
-                <div onclick="document.querySelector('button:nth-child(3)').click();" style="background:linear-gradient(145deg,#1a1a2e,#16213e); border:1px solid #333;
-                            border-radius:16px; padding:2rem 2.5rem; min-width:200px;
-                            transition:border-color 0.2s, transform 0.2s; cursor:pointer;"
-                     onmouseover="this.style.borderColor='#ffd200'; this.style.transform='translateY(-4px)';"
-                     onmouseout="this.style.borderColor='#333'; this.style.transform='translateY(0)';">
-                    <div style="font-family:'Bebas Neue',sans-serif; font-size:1.8rem; color:#ffd200;
-                                letter-spacing:2px;">QUESTOES</div>
-                    <div style="font-family:'Outfit',sans-serif; color:#888; font-size:0.85rem; margin-top:4px;">
-                        Desafios da regata ativa</div>
-                </div>
-            </div>
         </div>
         """,
         unsafe_allow_html=True,
     )
+    home_leaderboard, home_questoes = st.columns(2, gap="large")
+    with home_leaderboard:
+        with st.container(border=True):
+            st.markdown("### 🏆 LEADERBOARD")
+            st.caption("Ranking em tempo real")
+            if st.button("Abrir leaderboard", key="home_leaderboard", use_container_width=True):
+                st.session_state.current_page = "leaderboard"
+                st.rerun()
+    with home_questoes:
+        with st.container(border=True):
+            st.markdown("### 📝 QUESTOES")
+            st.caption("Desafios da regata ativa")
+            if st.button("Abrir questoes", key="home_questoes", use_container_width=True):
+                st.session_state.current_page = "questoes"
+                st.rerun()
 
 elif st.session_state.current_page == "leaderboard":
     spec = importlib.util.spec_from_file_location("leaderboard_page", "pages/3_Leaderboard.py")
@@ -153,28 +163,3 @@ elif st.session_state.current_page == "juiz":
     spec = importlib.util.spec_from_file_location("juiz_page", "pages/2_Juiz.py")
     juiz = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(juiz)
-
-with st.sidebar:
-    st.image("assets/images/logo NEMPA.png", width="content")
-    st.markdown("### 🏆 The Team (NEMPA)")
-    
-    # Project Lead
-    st.markdown("**Project Lead**")
-    st.markdown("👨‍🏫 *Prof. Dr. Roberto Sant'Anna*")
-    
-    st.write("") # Spacer
-    
-    # Core Dev (Technical Acknowledgment)
-    st.markdown("**Core Developers**")
-    st.markdown("🧠 *Enzo Ribeiro*")
-    st.markdown("🧠 *Gabriel Siron*")
-    st.markdown("🧠 *Ikaro Vieira*")
-    
-    st.write("")
-
-    # Scientific Devs (Support Team)
-    st.markdown("**Scientific Developers**")
-    st.markdown("💻 *Iago Nunes*")
-
-    st.divider()
-    st.markdown("© 2026 NEMPA - UFBA")

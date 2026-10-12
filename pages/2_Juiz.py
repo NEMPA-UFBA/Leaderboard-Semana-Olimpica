@@ -2,9 +2,8 @@ import streamlit as st
 from database import get_db
 from models import User, Equipe, Regata, Questao, Tentativa
 from auth import login_form, require_auth
-from scoring import registrar_tentativa, PONTOS_POR_TENTATIVA
-
-st.set_page_config(page_title="Juiz - Batalha Olimpica", page_icon="⚖️", layout="wide", initial_sidebar_state="collapsed")
+from scoring import excluir_tentativa, registrar_tentativa, PONTOS_POR_TENTATIVA
+from question_utils import numerar_questoes, ordenar_questoes, rotulo_questao
 
 db = get_db()
 
@@ -48,7 +47,10 @@ st.markdown(f"**Regata:** {regata.nome}")
 st.divider()
 
 equipes = db.query(Equipe).order_by(Equipe.nome).all()
-questoes = db.query(Questao).filter_by(regata_id=regata.id).all()
+questoes = ordenar_questoes(
+    db.query(Questao).filter_by(regata_id=regata.id).all()
+)
+numeros_questoes = numerar_questoes(questoes)
 
 if not equipes:
     st.warning("Nenhuma equipe cadastrada.")
@@ -68,12 +70,13 @@ with col_eq:
         "Equipe", equipes, format_func=lambda e: e.nome
     )
 
-niveis_display = {"facil": "🟢 Facil", "medio": "🟡 Medio", "dificil": "🔴 Dificil"}
 with col_qt:
     questao_selecionada = st.selectbox(
         "Questao",
         questoes,
-        format_func=lambda q: f"{niveis_display.get(q.nivel, q.nivel)} — {q.imagem_filename or q.enunciado[:30] if q.enunciado else 'Sem titulo'}",
+        format_func=lambda questao: rotulo_questao(
+            questao, numeros_questoes[questao.id]
+        ),
     )
 
 st.divider()
@@ -155,7 +158,8 @@ else:
                 st.error(result["erro"])
             else:
                 st.success(
-                    f"**{equipe_selecionada.nome}** — {niveis_display.get(questao_selecionada.nivel, '')} — "
+                    f"**{equipe_selecionada.nome}** — "
+                    f"**{rotulo_questao(questao_selecionada, numeros_questoes[questao_selecionada.id])}** — "
                     f"{result['numero']}a tentativa — **+{result['pontos']} pontos!**"
                 )
                 st.balloons()
@@ -170,7 +174,8 @@ else:
             else:
                 restantes = 3 - result["numero"]
                 st.warning(
-                    f"**{equipe_selecionada.nome}** — {niveis_display.get(questao_selecionada.nivel, '')} — "
+                    f"**{equipe_selecionada.nome}** — "
+                    f"**{rotulo_questao(questao_selecionada, numeros_questoes[questao_selecionada.id])}** — "
                     f"Errou tentativa {result['numero']}. Restam {restantes} tentativa(s)."
                 )
 
@@ -181,12 +186,12 @@ if tentativas_anteriores:
     for t in tentativas_anteriores:
         with st.container(border=True):
             status_icon = "✅" if t.acertou else "❌"
-            c1, c2 = st.columns([5, 1])
+            c1, c2, c3 = st.columns([5, 1, 1])
             c1.markdown(
                 f"**Tentativa {t.numero}** — {status_icon} {'Acertou' if t.acertou else 'Errou'} — **{t.pontos} pts**"
             )
-            can_correct = (t.juiz_id == user["id"]) or (user["role"] == "admin")
-            if can_correct:
+            can_modify = (t.juiz_id == user["id"]) or (user["role"] == "admin")
+            if can_modify:
                 if c2.button("Corrigir", key=f"corrigir_{t.id}"):
                     t.acertou = not t.acertou
                     if t.acertou:
@@ -194,6 +199,9 @@ if tentativas_anteriores:
                     else:
                         t.pontos = 0
                     db.commit()
+                    st.rerun()
+                if c3.button("Excluir", key=f"excluir_{t.id}", type="primary"):
+                    excluir_tentativa(db, t.id)
                     st.rerun()
 
 db.close()

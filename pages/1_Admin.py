@@ -1,7 +1,15 @@
 import streamlit as st
 from database import get_db
 from models import User, Equipe, Regata, Questao
-from auth import login_form, require_auth, hash_password
+from auth import (
+    change_password,
+    hash_password,
+    login_form,
+    password_validation_error,
+    require_auth,
+    verify_password,
+)
+from question_utils import numerar_questoes, ordenar_questoes, rotulo_questao
 
 db = get_db()
 
@@ -18,8 +26,8 @@ for key in ["form_juiz", "form_equipe", "form_regata", "form_questao"]:
     if key not in st.session_state:
         st.session_state[key] = 0
 
-tab_juizes, tab_equipes, tab_regatas, tab_questoes = st.tabs(
-    ["⚖️ Juizes", "👥 Equipes", "🏁 Regatas", "📝 Questoes"]
+tab_juizes, tab_equipes, tab_regatas, tab_questoes, tab_conta = st.tabs(
+    ["⚖️ Juizes", "👥 Equipes", "🏁 Regatas", "📝 Questoes", "🔐 Minha conta"]
 )
 
 if st.sidebar.button("Sair", use_container_width=True):
@@ -39,13 +47,22 @@ with tab_juizes:
             if submitted:
                 if not username or not password:
                     st.error("Preencha todos os campos.")
+                elif password_validation_error(password):
+                    st.error(password_validation_error(password))
                 elif db.query(User).filter_by(username=username).first():
                     st.error("Username ja existe.")
                 else:
-                    juiz = User(username=username, password_hash=hash_password(password), role="juiz")
+                    juiz = User(
+                        username=username,
+                        password_hash=hash_password(password),
+                        role="juiz",
+                        must_change_password=True,
+                    )
                     db.add(juiz)
                     db.commit()
-                    st.success(f"Juiz **{username}** criado!")
+                    st.success(
+                        f"Juiz **{username}** criado. Ele devera trocar a senha no primeiro acesso."
+                    )
                     st.session_state.form_juiz += 1
                     st.rerun()
 
@@ -69,11 +86,21 @@ with tab_juizes:
                     c1, c2 = st.columns(2)
                     if c1.button("Confirmar", key=f"confirm_senha_{j.id}", type="primary"):
                         if nova_senha:
-                            j.password_hash = hash_password(nova_senha)
-                            db.commit()
-                            st.success(f"Senha de **{j.username}** alterada!")
-                            del st.session_state[f"editing_senha_{j.id}"]
-                            st.rerun()
+                            error = password_validation_error(nova_senha)
+                            if error:
+                                st.error(error)
+                            elif verify_password(nova_senha, j.password_hash):
+                                st.error("A nova senha deve ser diferente da senha atual.")
+                            else:
+                                change_password(j, nova_senha)
+                                j.must_change_password = True
+                                db.commit()
+                                st.success(
+                                    f"Senha de **{j.username}** redefinida. "
+                                    "O juiz devera troca-la no proximo acesso."
+                                )
+                                del st.session_state[f"editing_senha_{j.id}"]
+                                st.rerun()
                         else:
                             st.error("Digite a nova senha.")
                     if c2.button("Cancelar", key=f"cancel_senha_{j.id}"):
@@ -235,14 +262,15 @@ with tab_questoes:
             if not questoes:
                 st.caption("Nenhuma questao nesta regata.")
 
-            niveis_ordem = {"facil": 0, "medio": 1, "dificil": 2}
-            questoes_sorted = sorted(questoes, key=lambda q: niveis_ordem.get(q.nivel, 99))
+            questoes_sorted = ordenar_questoes(questoes)
+            numeros_questoes = numerar_questoes(questoes_sorted)
 
             for q in questoes_sorted:
-                nivel_label = niveis_display.get(q.nivel, q.nivel)
                 with st.container(border=True):
                     header_col, edit_col, del_col = st.columns([5, 0.5, 0.5])
-                    header_col.markdown(f"**{nivel_label}**")
+                    header_col.markdown(
+                        f"**{rotulo_questao(q, numeros_questoes[q.id])}**"
+                    )
                     if edit_col.button("✏️", key=f"edit_questao_{q.id}", help="Editar questao"):
                         st.session_state[f"editing_questao_{q.id}"] = True
                     if del_col.button("🗑️", key=f"del_questao_{q.id}", help="Remover questao"):
@@ -274,5 +302,32 @@ with tab_questoes:
                             st.markdown(q.enunciado)
                         if q.imagem:
                             st.image(q.imagem, width=300)
+
+with tab_conta:
+    st.markdown("#### Alterar senha de administrador")
+    admin_account = db.get(User, user["id"])
+    if admin_account is None:
+        st.error("A conta de administrador nao foi encontrada.")
+    else:
+        with st.form("alterar_senha_admin"):
+            current_password = st.text_input("Senha atual", type="password")
+            new_password = st.text_input("Nova senha", type="password")
+            confirmation = st.text_input("Confirme a nova senha", type="password")
+            submitted = st.form_submit_button("Atualizar senha", type="primary")
+
+        if submitted:
+            if not verify_password(current_password, admin_account.password_hash):
+                st.error("Senha atual incorreta.")
+            else:
+                error = password_validation_error(new_password, confirmation)
+                if error:
+                    st.error(error)
+                elif verify_password(new_password, admin_account.password_hash):
+                    st.error("A nova senha deve ser diferente da senha atual.")
+                else:
+                    change_password(admin_account, new_password)
+                    db.commit()
+                    st.success("Senha do administrador atualizada.")
+                    st.rerun()
 
 db.close()

@@ -4,4 +4,5 @@ data.db
 .streamlit/
 *.egg-info/
 venv/
+venv_leaderboard/
 .env

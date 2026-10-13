@@ -9,6 +9,7 @@ from team_utils import (
     excluir_equipes,
     gerar_nomes_equipes,
     ordenar_equipes,
+    ordenar_equipes_gregas,
 )
 
 
@@ -60,6 +61,32 @@ def test_ordenar_equipes_ignora_acentos_e_considera_nomes_personalizados(db):
     nomes = [equipe.nome for equipe in ordenar_equipes(db.query(Equipe).all())]
 
     assert nomes == ["Astro A", "Astro Z", "Time Épsilon", "Time Gama"]
+
+
+def test_ordenar_equipes_gregas_usa_sequencia_do_alfabeto_grego(db):
+    db.add_all(
+        [
+            Equipe(nome="Time Delta"),
+            Equipe(nome="Time Alfa"),
+            Equipe(nome="Time Gama"),
+            Equipe(nome="Time Beta"),
+            Equipe(nome="Equipe Z"),
+        ]
+    )
+    db.commit()
+
+    nomes = [
+        equipe.nome
+        for equipe in ordenar_equipes_gregas(db.query(Equipe).all())
+    ]
+
+    assert nomes == [
+        "Time Alfa",
+        "Time Beta",
+        "Time Gama",
+        "Time Delta",
+        "Equipe Z",
+    ]
 
 
 @pytest.mark.parametrize("quantidade", [0, -1, True, 1.5])

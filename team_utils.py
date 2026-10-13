@@ -69,8 +69,35 @@ def _chave_nome(nome: str) -> str:
     )
 
 
+_ORDEM_GREGA = {
+    _chave_nome(nome): indice for indice, nome in enumerate(_NOMES_GREGOS)
+}
+
+
+def chave_ordenacao_equipe(nome: str) -> tuple[int, int, str]:
+    nome_normalizado = _chave_nome(nome.strip())
+    nome_grego = nome_normalizado
+    for prefixo in ("time ", "equipe "):
+        if nome_grego.startswith(prefixo):
+            nome_grego = nome_grego[len(prefixo):]
+            break
+
+    partes = nome_grego.rsplit(" ", 1)
+    if len(partes) == 2 and partes[1].isdigit():
+        nome_grego = partes[0]
+
+    indice_grego = _ORDEM_GREGA.get(nome_grego)
+    if indice_grego is not None:
+        return (0, indice_grego, nome_normalizado)
+    return (1, 0, nome_normalizado)
+
+
 def ordenar_equipes(equipes: list[Equipe]) -> list[Equipe]:
     return sorted(equipes, key=lambda equipe: _chave_nome(equipe.nome))
+
+
+def ordenar_equipes_gregas(equipes: list[Equipe]) -> list[Equipe]:
+    return sorted(equipes, key=lambda equipe: chave_ordenacao_equipe(equipe.nome))
 
 
 def gerar_nomes_equipes(quantidade: int, nomes_existentes=()) -> list[str]:

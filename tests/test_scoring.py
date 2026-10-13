@@ -152,6 +152,26 @@ def test_calcular_leaderboard(db):
     assert ranking[1]["pontos"] == 80
 
 
+def test_leaderboard_sem_tentativas_usa_ordem_grega(db):
+    db.add_all(
+        [
+            Equipe(nome="Time Gama"),
+            Equipe(nome="Time Alfa"),
+            Equipe(nome="Time Beta"),
+        ]
+    )
+    db.commit()
+
+    ranking = calcular_leaderboard(db)
+
+    assert [item["equipe"] for item in ranking[:3]] == [
+        "Time Alfa",
+        "Time Beta",
+        "Time Gama",
+    ]
+    assert all(item["pontos"] == 0 for item in ranking)
+
+
 def test_excluir_unica_tentativa(db):
     equipe = db.query(Equipe).filter_by(nome="Equipe A").first()
     questao = db.query(Questao).first()

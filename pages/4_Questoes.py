@@ -2,12 +2,6 @@ import streamlit as st
 from database import get_db
 from models import Regata, Questao
 from question_utils import numerar_questoes, ordenar_questoes, rotulo_questao
-from question_locking import liberar_reserva_ao_sair_da_tela
-
-
-db_saida = get_db()
-liberar_reserva_ao_sair_da_tela(db_saida, st.session_state)
-db_saida.close()
 
 
 @st.fragment(run_every=5)

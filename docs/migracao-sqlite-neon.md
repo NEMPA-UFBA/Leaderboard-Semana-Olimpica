@@ -1,6 +1,6 @@
 # Copiar o banco local para uma branch Neon de teste
 
-O banco local `data.db` contem dados de teste. A importacao copia usuarios (incluindo hashes de senha), equipes, regatas, questoes, imagens, tags associadas, tentativas e, quando existir, os registros de auditoria. Ela nao copia senhas em texto claro nem reservas temporarias de questoes. Bancos SQLite antigos sem auditoria ou tabelas de tags continuam aceitos; as tags padrao e as de dificuldade serao criadas/preenchidas quando o app inicializar.
+O banco local `data.db` contem dados de teste. A importacao copia usuarios (incluindo hashes de senha), equipes, regatas, questoes, imagens e tentativas. Ela nao copia senhas em texto claro.
 
 ## Criar a branch de teste
 

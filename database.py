@@ -1,5 +1,5 @@
 import os
-from sqlalchemy import DateTime, create_engine, inspect, text
+from sqlalchemy import create_engine, inspect, text
 from sqlalchemy.orm import sessionmaker, DeclarativeBase
 import streamlit as st
 from streamlit.errors import StreamlitSecretNotFoundError
@@ -78,67 +78,6 @@ def _ensure_user_password_migration():
             ))
 
 
-def _ensure_user_name_migration():
-    columns = {column["name"] for column in inspect(engine).get_columns("users")}
-    if "nome" not in columns:
-        with engine.begin() as conn:
-            conn.execute(text("ALTER TABLE users ADD COLUMN nome VARCHAR(100)"))
-
-    with engine.begin() as conn:
-        conn.execute(
-            text(
-                "UPDATE users SET nome = username "
-                "WHERE nome IS NULL OR TRIM(nome) = ''"
-            )
-        )
-
-
-def _ensure_attempt_unique_index():
-    duplicates = text(
-        "SELECT equipe_id, questao_id, numero, COUNT(*) "
-        "FROM tentativas "
-        "GROUP BY equipe_id, questao_id, numero "
-        "HAVING COUNT(*) > 1 "
-        "LIMIT 1"
-    )
-    with engine.connect() as conn:
-        duplicate = conn.execute(duplicates).first()
-    if duplicate:
-        raise RuntimeError(
-            "Existem tentativas duplicadas para a mesma equipe, questao e numero. "
-            "Corrija esses registros antes de iniciar o aplicativo."
-        )
-
-    from models import Tentativa
-
-    unique_index = next(
-        index
-        for index in Tentativa.__table__.indexes
-        if index.name == "uq_tentativas_equipe_questao_numero"
-    )
-    unique_index.create(bind=engine, checkfirst=True)
-
-
-def _ensure_attempt_timestamp_timezone():
-    if engine.dialect.name != "postgresql":
-        return
-
-    created_at = next(
-        column
-        for column in inspect(engine).get_columns("tentativas")
-        if column["name"] == "created_at"
-    )
-    if isinstance(created_at["type"], DateTime) and not created_at["type"].timezone:
-        with engine.begin() as conn:
-            conn.execute(
-                text(
-                    "ALTER TABLE tentativas "
-                    "ALTER COLUMN created_at TYPE TIMESTAMP WITH TIME ZONE "
-                    "USING created_at AT TIME ZONE 'UTC'"
-                )
-            )
-
-
 def init_db():
     """Create tables and bootstrap an admin account when needed."""
     global _initialized
@@ -151,7 +90,6 @@ def init_db():
 
     Base.metadata.create_all(bind=engine)
     _ensure_user_password_migration()
-    _ensure_user_name_migration()
 
     # Migrate: add enunciado column if missing (for existing databases)
     inspector = inspect(engine)
@@ -160,14 +98,6 @@ def init_db():
         with engine.connect() as conn:
             conn.execute(text("ALTER TABLE questoes ADD COLUMN enunciado TEXT DEFAULT ''"))
             conn.commit()
-
-    from question_tags import garantir_tags_padrao
-
-    tags_db = SessionLocal()
-    try:
-        garantir_tags_padrao(tags_db)
-    finally:
-        tags_db.close()
 
     # Migrate: remove FK constraint on juiz_id in tentativas (for existing databases)
     if "tentativas" in inspector.get_table_names():
@@ -195,9 +125,6 @@ def init_db():
                 conn.execute(text("ALTER TABLE tentativas_new RENAME TO tentativas"))
                 conn.commit()
 
-    _ensure_attempt_timestamp_timezone()
-    _ensure_attempt_unique_index()
-
     # Create default admin if not exists
     db = SessionLocal()
     try:
@@ -217,7 +144,6 @@ def init_db():
                     f"Invalid ADMIN_INITIAL_PASSWORD: {password_error}"
                 )
             admin = User(
-                nome="Administrador",
                 username="admin",
                 password_hash=hash_password(initial_password),
                 role="admin",

@@ -1,14 +1,5 @@
 import bcrypt
-import extra_streamlit_components as stx
 import streamlit as st
-from urllib.parse import urlparse
-
-from login_sessions import (
-    COOKIE_NAME,
-    buscar_sessao_login,
-    criar_sessao_login,
-    revogar_sessao_login,
-)
 
 MIN_PASSWORD_LENGTH = 12
 MAX_PASSWORD_BYTES = 72
@@ -52,59 +43,7 @@ def require_auth(allowed_roles: list[str]) -> dict | None:
     return None
 
 
-def _cookie_manager(key: str = "batalha_auth_cookie_manager"):
-    return stx.CookieManager(key=key)
-
-
-def _write_session_cookie(cookie_manager, token: str, expires_at) -> None:
-    scheme = urlparse(getattr(st.context, "url", "")).scheme
-    cookie_manager.set(
-        COOKIE_NAME,
-        token,
-        key="batalha_auth_cookie_set",
-        path="/",
-        expires_at=expires_at,
-        secure=scheme == "https",
-        same_site="lax",
-    )
-
-
-def _delete_session_cookie(cookie_manager) -> None:
-    cookies = cookie_manager.cookies or {}
-    if COOKIE_NAME in cookies:
-        cookie_manager.delete(COOKIE_NAME, key="batalha_auth_cookie_delete")
-    else:
-        cookie_manager.cookie_manager(
-            method="delete",
-            cookie=COOKIE_NAME,
-            key="batalha_auth_cookie_delete",
-        )
-
-
-def _establish_login(db_session, user, cookie_manager) -> None:
-    token, expires_at = criar_sessao_login(db_session, user.id)
-    _write_session_cookie(cookie_manager, token, expires_at)
-    st.session_state["auth_session_token"] = token
-    st.session_state["user"] = {
-        "id": user.id,
-        "username": user.username,
-        "role": user.role,
-    }
-    st.session_state.pop(_PENDING_PASSWORD_CHANGE, None)
-
-
-def logout_user(db_session) -> None:
-    token = st.session_state.pop("auth_session_token", None)
-    if token is None:
-        token = st.context.cookies.get(COOKIE_NAME)
-    revogar_sessao_login(db_session, token)
-    st.session_state.pop("user", None)
-    st.session_state.pop(_PENDING_PASSWORD_CHANGE, None)
-    cookie_manager = _cookie_manager("batalha_logout_cookie_manager")
-    _delete_session_cookie(cookie_manager)
-
-
-def _render_required_password_change(db_session, user, cookie_manager) -> bool:
+def _render_required_password_change(db_session, user) -> None:
     st.warning("Por seguranca, defina uma nova senha antes de continuar.")
     with st.form("required_password_change"):
         password = st.text_input("Nova senha", type="password")
@@ -112,7 +51,7 @@ def _render_required_password_change(db_session, user, cookie_manager) -> bool:
         submitted = st.form_submit_button("Salvar nova senha", type="primary")
 
     if not submitted:
-        return False
+        return
 
     error = password_validation_error(password, confirmation)
     if error:
@@ -122,62 +61,29 @@ def _render_required_password_change(db_session, user, cookie_manager) -> bool:
     else:
         change_password(user, password)
         db_session.commit()
-        _establish_login(db_session, user, cookie_manager)
+        st.session_state["user"] = {
+            "id": user.id,
+            "username": user.username,
+            "role": user.role,
+        }
+        st.session_state.pop(_PENDING_PASSWORD_CHANGE, None)
+        st.success("Senha atualizada.")
         st.rerun()
-
-    return False
 
 
 def login_form(db_session, User):
-    """Restore a short-lived browser login or display the username/password form."""
+    """Display login form and authenticate user. Returns True if logged in."""
     session_user = st.session_state.get("user")
-    token = st.session_state.get("auth_session_token")
-    token_from_cookie = False
-    if not token:
-        cookie_value = st.context.cookies.get(COOKIE_NAME)
-        token = (
-            cookie_value
-            if isinstance(cookie_value, str) and cookie_value
-            else None
-        )
-        token_from_cookie = token is not None
-
-    cookie_manager = None
-    if token:
-        login_session = buscar_sessao_login(db_session, token)
-        user = (
-            db_session.get(User, login_session.user_id)
-            if login_session is not None
-            else None
-        )
-        if login_session is not None and user is not None:
-            if user.must_change_password:
-                revogar_sessao_login(db_session, token)
-                st.session_state.pop("auth_session_token", None)
-                st.session_state.pop("user", None)
-                st.session_state[_PENDING_PASSWORD_CHANGE] = user.id
-                cookie_manager = _cookie_manager()
-                _delete_session_cookie(cookie_manager)
-            else:
-                st.session_state["auth_session_token"] = token
-                st.session_state["user"] = {
-                    "id": user.id,
-                    "username": user.username,
-                    "role": user.role,
-                }
-                return True
-        else:
-            if login_session is not None:
-                revogar_sessao_login(db_session, token)
-            st.session_state.pop("auth_session_token", None)
+    if session_user:
+        user = db_session.get(User, session_user["id"])
+        if user is None:
             st.session_state.pop("user", None)
-            if token_from_cookie:
-                cookie_manager = _cookie_manager()
-                _delete_session_cookie(cookie_manager)
-            st.warning("Sua sessao expirou ou nao esta mais disponivel. Entre novamente.")
-    elif session_user:
-        st.session_state.pop("user", None)
-        st.warning("Entre novamente para iniciar uma sessao segura.")
+            st.warning("Sua conta nao esta mais disponivel. Entre novamente.")
+        elif user.must_change_password:
+            st.session_state.pop("user", None)
+            st.session_state[_PENDING_PASSWORD_CHANGE] = user.id
+        else:
+            return True
 
     pending_user_id = st.session_state.get(_PENDING_PASSWORD_CHANGE)
     if pending_user_id is not None:
@@ -186,14 +92,8 @@ def login_form(db_session, User):
             st.session_state.pop(_PENDING_PASSWORD_CHANGE, None)
             st.warning("Sua conta nao esta mais disponivel. Entre novamente.")
         else:
-            if cookie_manager is None:
-                cookie_manager = _cookie_manager()
-            return _render_required_password_change(
-                db_session, user, cookie_manager
-            )
-
-    if cookie_manager is None:
-        cookie_manager = _cookie_manager()
+            _render_required_password_change(db_session, user)
+            return False
 
     st.markdown(
         """
@@ -225,7 +125,12 @@ def login_form(db_session, User):
                     if user.must_change_password:
                         st.session_state[_PENDING_PASSWORD_CHANGE] = user.id
                         st.rerun()
-                    _establish_login(db_session, user, cookie_manager)
-                    return True
-                st.error("Usuario ou senha incorretos.")
+                    st.session_state["user"] = {
+                        "id": user.id,
+                        "username": user.username,
+                        "role": user.role,
+                    }
+                    st.rerun()
+                else:
+                    st.error("Usuario ou senha incorretos.")
     return False

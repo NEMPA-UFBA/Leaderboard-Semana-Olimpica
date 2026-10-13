@@ -1,61 +1,21 @@
-from html import escape
-from uuid import uuid4
-
 import streamlit as st
-
-from auth import login_form, logout_user, require_auth
 from database import get_db
-from judge_panel import render_judge_workflow
-from models import User
-from question_locking import liberar_reserva_ao_sair_da_tela, renovar_reserva_questao
-from time_utils import agora_no_fuso_do_evento
-
-
-@st.fragment(run_every="30s")
-def _renovar_reserva_periodicamente() -> None:
-    questao_id = st.session_state.get("question_lock_id")
-    session_token = st.session_state.get("question_lock_session")
-    if questao_id is None or not session_token:
-        return
-    if not st.session_state.get("question_lock_owned"):
-        return
-
-    heartbeat_db = get_db()
-    try:
-        renovada = renovar_reserva_questao(
-            heartbeat_db, questao_id, session_token
-        )
-    finally:
-        heartbeat_db.close()
-
-    if not renovada:
-        st.session_state["question_lock_owned"] = False
-        st.session_state["question_lock_owner"] = None
-        st.session_state["question_lock_lost"] = True
-        st.rerun(scope="app")
-
+from models import User, Equipe, Regata, Questao, Tentativa
+from auth import login_form, require_auth
+from scoring import excluir_tentativa, registrar_tentativa, PONTOS_POR_TENTATIVA
+from question_utils import numerar_questoes, ordenar_questoes, rotulo_questao
 
 db = get_db()
+
 if not login_form(db, User):
-    liberar_reserva_ao_sair_da_tela(db, st.session_state)
-    db.close()
     st.stop()
 
 user = require_auth(["juiz", "admin"])
 if not user:
     st.error("Acesso restrito a juizes.")
-    liberar_reserva_ao_sair_da_tela(db, st.session_state)
-    db.close()
     st.stop()
 
-conta = db.get(User, user["id"])
-nome_exibicao = conta.nome if conta and conta.nome else user["username"]
-db.close()
-
-if "question_lock_session" not in st.session_state:
-    st.session_state["question_lock_session"] = uuid4().hex
-session_token = st.session_state["question_lock_session"]
-
+# --- HEADER ---
 st.markdown(
     """
     <style>
@@ -68,24 +28,180 @@ st.markdown(
     """,
     unsafe_allow_html=True,
 )
-st.markdown(
-    '<div class="juiz-header">PAINEL DO JUIZ</div>', unsafe_allow_html=True
-)
-st.markdown(
-    f'<div class="juiz-user">Bem-vindo(a), {escape(nome_exibicao)}!</div>',
-    unsafe_allow_html=True,
-)
-st.caption(
-    f"Data e hora: {agora_no_fuso_do_evento():%d/%m/%Y %H:%M:%S} "
-    "(horario de Brasilia)"
-)
+st.markdown(f'<div class="juiz-header">PAINEL DO JUIZ</div>', unsafe_allow_html=True)
+st.markdown(f'<div class="juiz-user">Logado como: {user["username"]}</div>', unsafe_allow_html=True)
 
 if st.sidebar.button("Sair", use_container_width=True):
-    logout_user(db)
-    liberar_reserva_ao_sair_da_tela(db, st.session_state)
-    st.session_state.pop("question_lock_session", None)
-    db.close()
+    del st.session_state["user"]
     st.rerun()
 
-_renovar_reserva_periodicamente()
-render_judge_workflow(session_token)
+# Find active regata
+regata = db.query(Regata).filter_by(ativa=True).first()
+
+if not regata:
+    st.warning("Nenhuma regata ativa no momento. Aguarde o admin ativar uma regata.")
+    db.close()
+    st.stop()
+
+st.markdown(f"**Regata:** {regata.nome}")
+st.divider()
+
+equipes = db.query(Equipe).order_by(Equipe.nome).all()
+questoes = ordenar_questoes(
+    db.query(Questao).filter_by(regata_id=regata.id).all()
+)
+numeros_questoes = numerar_questoes(questoes)
+
+if not equipes:
+    st.warning("Nenhuma equipe cadastrada.")
+    db.close()
+    st.stop()
+
+if not questoes:
+    st.warning("Nenhuma questao nesta regata.")
+    db.close()
+    st.stop()
+
+# --- Selection ---
+col_eq, col_qt = st.columns(2, gap="large")
+
+with col_eq:
+    equipe_selecionada = st.selectbox(
+        "Equipe", equipes, format_func=lambda e: e.nome
+    )
+
+with col_qt:
+    questao_selecionada = st.selectbox(
+        "Questao",
+        questoes,
+        format_func=lambda questao: rotulo_questao(
+            questao, numeros_questoes[questao.id]
+        ),
+    )
+
+st.divider()
+
+# --- Attempt status ---
+tentativas_anteriores = (
+    db.query(Tentativa)
+    .filter_by(equipe_id=equipe_selecionada.id, questao_id=questao_selecionada.id)
+    .order_by(Tentativa.numero)
+    .all()
+)
+
+ja_acertou = any(t.acertou for t in tentativas_anteriores)
+num_tentativas = len(tentativas_anteriores)
+
+# Status indicator
+if ja_acertou:
+    t_acerto = next(t for t in tentativas_anteriores if t.acertou)
+    st.markdown(
+        f"""
+        <div style="background:linear-gradient(135deg,#1b5e20,#2e7d32); border-radius:12px; padding:1.5rem;
+                    text-align:center; margin-bottom:1rem;">
+            <div style="font-family:'Bebas Neue',sans-serif; font-size:1.8rem; color:#a5d6a7;
+                        letter-spacing:2px;">JA ACERTOU!</div>
+            <div style="font-family:'Outfit',sans-serif; color:#e8f5e9; font-size:1rem; margin-top:4px;">
+                Tentativa {t_acerto.numero} — +{t_acerto.pontos} pontos</div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+elif num_tentativas >= 3:
+    st.markdown(
+        """
+        <div style="background:linear-gradient(135deg,#b71c1c,#c62828); border-radius:12px; padding:1.5rem;
+                    text-align:center; margin-bottom:1rem;">
+            <div style="font-family:'Bebas Neue',sans-serif; font-size:1.8rem; color:#ef9a9a;
+                        letter-spacing:2px;">TENTATIVAS ESGOTADAS</div>
+            <div style="font-family:'Outfit',sans-serif; color:#ffcdd2; font-size:1rem; margin-top:4px;">
+                3/3 tentativas usadas — 0 pontos</div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+else:
+    proxima = num_tentativas + 1
+    pontos_possiveis = {1: 100, 2: 80, 3: 50}
+
+    # Attempt dots
+    dots = ""
+    for i in range(1, 4):
+        if i <= num_tentativas:
+            dots += '<span style="color:#ef5350; font-size:1.5rem; margin:0 4px;">●</span>'
+        elif i == proxima:
+            dots += '<span style="color:#ffd200; font-size:1.5rem; margin:0 4px;">●</span>'
+        else:
+            dots += '<span style="color:#555; font-size:1.5rem; margin:0 4px;">○</span>'
+
+    st.markdown(
+        f"""
+        <div style="background:linear-gradient(135deg,#1a1a2e,#16213e); border:1px solid #333;
+                    border-radius:12px; padding:1.5rem; text-align:center; margin-bottom:1rem;">
+            <div style="margin-bottom:8px;">{dots}</div>
+            <div style="font-family:'Outfit',sans-serif; color:#ccc; font-size:1rem;">
+                {proxima}a tentativa — vale <strong style="color:#ffd200;">{pontos_possiveis[proxima]} pontos</strong></div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    # Action buttons
+    col1, col2 = st.columns(2, gap="large")
+
+    with col1:
+        if st.button("✅ ACERTOU", use_container_width=True, type="primary"):
+            result = registrar_tentativa(
+                db, equipe_selecionada.id, questao_selecionada.id, True, user["id"]
+            )
+            if "erro" in result:
+                st.error(result["erro"])
+            else:
+                st.success(
+                    f"**{equipe_selecionada.nome}** — "
+                    f"**{rotulo_questao(questao_selecionada, numeros_questoes[questao_selecionada.id])}** — "
+                    f"{result['numero']}a tentativa — **+{result['pontos']} pontos!**"
+                )
+                st.balloons()
+
+    with col2:
+        if st.button("❌ ERROU", use_container_width=True):
+            result = registrar_tentativa(
+                db, equipe_selecionada.id, questao_selecionada.id, False, user["id"]
+            )
+            if "erro" in result:
+                st.error(result["erro"])
+            else:
+                restantes = 3 - result["numero"]
+                st.warning(
+                    f"**{equipe_selecionada.nome}** — "
+                    f"**{rotulo_questao(questao_selecionada, numeros_questoes[questao_selecionada.id])}** — "
+                    f"Errou tentativa {result['numero']}. Restam {restantes} tentativa(s)."
+                )
+
+# --- Attempt history & correction ---
+if tentativas_anteriores:
+    st.divider()
+    st.markdown("#### Historico de tentativas")
+    for t in tentativas_anteriores:
+        with st.container(border=True):
+            status_icon = "✅" if t.acertou else "❌"
+            c1, c2, c3 = st.columns([5, 1, 1])
+            c1.markdown(
+                f"**Tentativa {t.numero}** — {status_icon} {'Acertou' if t.acertou else 'Errou'} — **{t.pontos} pts**"
+            )
+            can_modify = (t.juiz_id == user["id"]) or (user["role"] == "admin")
+            if can_modify:
+                if c2.button("Corrigir", key=f"corrigir_{t.id}"):
+                    t.acertou = not t.acertou
+                    if t.acertou:
+                        t.pontos = PONTOS_POR_TENTATIVA.get(t.numero, 0)
+                    else:
+                        t.pontos = 0
+                    db.commit()
+                    st.rerun()
+                if c3.button("Excluir", key=f"excluir_{t.id}", type="primary"):
+                    excluir_tentativa(db, t.id)
+                    st.rerun()
+
+db.close()

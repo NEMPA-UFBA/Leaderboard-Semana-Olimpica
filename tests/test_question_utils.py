@@ -3,12 +3,12 @@ from types import SimpleNamespace
 from question_utils import numerar_questoes, ordenar_questoes, rotulo_questao
 
 
-def test_numbers_questions_by_registration_order_not_difficulty():
+def test_numbers_questions_once_per_regatta_in_display_order():
     questions = [
-        SimpleNamespace(id=14, nivel="facil"),
-        SimpleNamespace(id=8, nivel="facil"),
-        SimpleNamespace(id=3, nivel="dificil"),
-        SimpleNamespace(id=2, nivel="medio"),
+        SimpleNamespace(id=14, nivel="dificil"),
+        SimpleNamespace(id=8, nivel="medio"),
+        SimpleNamespace(id=3, nivel="facil"),
+        SimpleNamespace(id=2, nivel="facil"),
     ]
 
     ordered = ordenar_questoes(questions)
@@ -25,7 +25,7 @@ def test_numbering_restarts_for_each_regatta():
     assert numerar_questoes(second_regatta) == {19: 1}
 
 
-def test_question_label_hides_level_and_enunciado():
+def test_question_label_only_includes_number_and_level():
     question = SimpleNamespace(
         id=10,
         nivel="medio",
@@ -33,6 +33,5 @@ def test_question_label_hides_level_and_enunciado():
         enunciado="Resolva 2x + 3 = 7",
     )
 
-    assert rotulo_questao(question, 2) == "Questão 2"
-    assert "Médio" not in rotulo_questao(question, 2)
+    assert rotulo_questao(question, 2) == "Questão 2 — 🟡 Médio"
     assert "Resolva 2x + 3 = 7" not in rotulo_questao(question, 2)

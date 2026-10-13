@@ -23,11 +23,13 @@ db = get_db()
 liberar_reserva_ao_sair_da_tela(db, st.session_state)
 
 if not login_form(db, User):
+    db.close()
     st.stop()
 
 user = require_auth(["admin"])
 if not user:
     st.error("Acesso restrito a administradores.")
+    db.close()
     st.stop()
 
 # Initialize form counters for clearing forms after submission

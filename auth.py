@@ -213,10 +213,25 @@ def login_form(db_session, User):
 
     col1, col2, col3 = st.columns([1, 1.5, 1])
     with col2:
-        username = st.text_input("Usuario", placeholder="Digite seu usuario")
-        password = st.text_input("Senha", type="password", placeholder="Digite sua senha")
+        with st.form("login_form"):
+            username = st.text_input(
+                "Usuario",
+                placeholder="Digite seu usuario",
+                autocomplete="username",
+            )
+            password = st.text_input(
+                "Senha",
+                type="password",
+                placeholder="Digite sua senha",
+                autocomplete="current-password",
+            )
+            submitted = st.form_submit_button(
+                "Entrar",
+                use_container_width=True,
+                type="primary",
+            )
 
-        if st.button("Entrar", use_container_width=True, type="primary"):
+        if submitted:
             if not username or not password:
                 st.error("Preencha usuario e senha.")
             else:

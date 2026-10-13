@@ -2,8 +2,14 @@ import pytest
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 from database import Base
-from models import User, Equipe, Regata, Questao, Tentativa
-from scoring import registrar_tentativa, calcular_leaderboard, excluir_tentativa
+from models import AuditLog, User, Equipe, Regata, Questao, Tentativa
+from scoring import (
+    calcular_leaderboard,
+    corrigir_tentativa,
+    excluir_tentativa,
+    registrar_tentativa,
+)
+from question_locking import reservar_questao
 
 
 @pytest.fixture
@@ -90,6 +96,28 @@ def test_bloqueia_apos_acerto(db):
     assert result["erro"] == "Equipe ja acertou esta questao."
 
 
+def test_reserva_impede_outra_sessao_de_registrar_tentativa(db):
+    equipe = db.query(Equipe).filter_by(nome="Equipe A").one()
+    questao = db.query(Questao).one()
+    juiz1 = db.query(User).one()
+    juiz2 = User(username="juiz2", password_hash="hash", role="juiz")
+    db.add(juiz2)
+    db.commit()
+    reservar_questao(db, questao.id, juiz1.id, "Juiz Um", "sessao-1")
+
+    result = registrar_tentativa(
+        db,
+        equipe.id,
+        questao.id,
+        False,
+        juiz2.id,
+        "sessao-2",
+    )
+
+    assert "reservada por Juiz Um" in result["erro"]
+    assert db.query(Tentativa).count() == 0
+
+
 def test_erro_terceira_tentativa_zero_pontos(db):
     equipe = db.query(Equipe).filter_by(nome="Equipe A").first()
     questao = db.query(Questao).first()
@@ -132,7 +160,7 @@ def test_excluir_unica_tentativa(db):
     registrar_tentativa(db, equipe.id, questao.id, False, juiz.id)
     tentativa = db.query(Tentativa).first()
 
-    excluir_tentativa(db, tentativa.id)
+    excluir_tentativa(db, tentativa.id, juiz.id, juiz.role)
 
     restantes = db.query(Tentativa).filter_by(equipe_id=equipe.id, questao_id=questao.id).all()
     assert restantes == []
@@ -150,7 +178,7 @@ def test_excluir_primeira_renumera_e_recalcula_pontos(db):
     primeira = db.query(Tentativa).filter_by(
         equipe_id=equipe.id, questao_id=questao.id, numero=1
     ).first()
-    excluir_tentativa(db, primeira.id)
+    excluir_tentativa(db, primeira.id, juiz.id, juiz.role)
 
     restantes = (
         db.query(Tentativa)
@@ -176,7 +204,7 @@ def test_excluir_tentativa_do_meio_renumera(db):
     segunda = db.query(Tentativa).filter_by(
         equipe_id=equipe.id, questao_id=questao.id, numero=2
     ).first()
-    excluir_tentativa(db, segunda.id)
+    excluir_tentativa(db, segunda.id, juiz.id, juiz.role)
 
     restantes = (
         db.query(Tentativa)
@@ -202,11 +230,131 @@ def test_excluir_tentativa_atualiza_leaderboard(db):
     primeira = db.query(Tentativa).filter_by(
         equipe_id=equipe.id, questao_id=questao.id, numero=1
     ).first()
-    excluir_tentativa(db, primeira.id)
+    excluir_tentativa(db, primeira.id, juiz.id, juiz.role)
 
     assert next(r for r in calcular_leaderboard(db) if r["equipe"] == equipe.nome)["pontos"] == 100
 
 
 def test_excluir_tentativa_inexistente_informa_erro(db):
     with pytest.raises(LookupError, match="Tentativa nao encontrada"):
-        excluir_tentativa(db, 999)
+        excluir_tentativa(db, 999, 1, "juiz")
+
+
+def test_corrigir_tentativa_registra_auditoria(db):
+    equipe = db.query(Equipe).filter_by(nome="Equipe A").first()
+    questao = db.query(Questao).first()
+    juiz = db.query(User).first()
+    outro_juiz = User(
+        username="juiz2",
+        password_hash="hash",
+        role="juiz",
+        nome="Juiza Dois",
+    )
+    db.add(outro_juiz)
+    db.commit()
+    registrar_tentativa(db, equipe.id, questao.id, False, juiz.id)
+    tentativa = db.query(Tentativa).one()
+
+    result = corrigir_tentativa(
+        db, tentativa.id, outro_juiz.id, outro_juiz.role, True
+    )
+
+    registro = db.query(AuditLog).one()
+    assert result == {"numero": 1, "acertou": True, "pontos": 100}
+    assert registro.ator_id == outro_juiz.id
+    assert registro.ator_role == "juiz"
+    assert tentativa.juiz_id == juiz.id
+    assert registro.equipe_id == equipe.id
+    assert registro.tentativa_id == tentativa.id
+    assert registro.acao == "correcao"
+    assert registro.detalhes == {
+        "antes": {"numero": 1, "acertou": False, "pontos": 0},
+        "depois": {"numero": 1, "acertou": True, "pontos": 100},
+    }
+
+
+def test_correction_can_set_wrong_without_toggling_and_audits_change(db):
+    equipe = db.query(Equipe).filter_by(nome="Equipe A").one()
+    questao = db.query(Questao).one()
+    juiz = db.query(User).one()
+    registrar_tentativa(db, equipe.id, questao.id, True, juiz.id)
+    tentativa = db.query(Tentativa).one()
+
+    result = corrigir_tentativa(
+        db, tentativa.id, juiz.id, juiz.role, False
+    )
+
+    assert result == {"numero": 1, "acertou": False, "pontos": 0}
+    assert db.query(AuditLog).one().detalhes == {
+        "antes": {"numero": 1, "acertou": True, "pontos": 100},
+        "depois": {"numero": 1, "acertou": False, "pontos": 0},
+    }
+
+
+def test_correction_with_same_result_does_not_create_audit_entry(db):
+    equipe = db.query(Equipe).filter_by(nome="Equipe A").one()
+    questao = db.query(Questao).one()
+    juiz = db.query(User).one()
+    registrar_tentativa(db, equipe.id, questao.id, False, juiz.id)
+    tentativa = db.query(Tentativa).one()
+
+    result = corrigir_tentativa(
+        db, tentativa.id, juiz.id, juiz.role, False
+    )
+
+    assert result == {"numero": 1, "acertou": False, "pontos": 0}
+    assert db.query(AuditLog).count() == 0
+
+
+def test_reserva_impede_outra_sessao_de_corrigir_tentativa(db):
+    equipe = db.query(Equipe).filter_by(nome="Equipe A").one()
+    questao = db.query(Questao).one()
+    juiz1 = db.query(User).one()
+    juiz2 = User(username="juiz2", password_hash="hash", role="juiz")
+    db.add(juiz2)
+    db.commit()
+    registrar_tentativa(db, equipe.id, questao.id, False, juiz1.id)
+    tentativa = db.query(Tentativa).one()
+    reservar_questao(db, questao.id, juiz1.id, "Juiz Um", "sessao-1")
+
+    result = corrigir_tentativa(
+        db, tentativa.id, juiz2.id, juiz2.role, True, "sessao-2"
+    )
+
+    assert "reservada por Juiz Um" in result["erro"]
+    assert db.query(Tentativa).one().acertou is False
+    assert db.query(AuditLog).count() == 0
+
+
+def test_corrigir_como_certa_bloqueia_se_houver_tentativa_posterior(db):
+    equipe = db.query(Equipe).filter_by(nome="Equipe A").first()
+    questao = db.query(Questao).first()
+    juiz = db.query(User).first()
+    registrar_tentativa(db, equipe.id, questao.id, False, juiz.id)
+    registrar_tentativa(db, equipe.id, questao.id, False, juiz.id)
+    primeira = db.query(Tentativa).filter_by(numero=1).one()
+
+    result = corrigir_tentativa(db, primeira.id, juiz.id, juiz.role, True)
+
+    assert "erro" in result
+    assert db.query(AuditLog).count() == 0
+    assert db.query(Tentativa).filter_by(numero=1).one().acertou is False
+
+
+def test_excluir_tentativa_registra_auditoria(db):
+    equipe = db.query(Equipe).filter_by(nome="Equipe A").first()
+    questao = db.query(Questao).first()
+    juiz = db.query(User).first()
+    registrar_tentativa(db, equipe.id, questao.id, True, juiz.id)
+    tentativa = db.query(Tentativa).one()
+
+    excluir_tentativa(db, tentativa.id, juiz.id, juiz.role)
+
+    registro = db.query(AuditLog).one()
+    assert registro.ator_id == juiz.id
+    assert registro.equipe_id == equipe.id
+    assert registro.tentativa_id == tentativa.id
+    assert registro.acao == "exclusao"
+    assert registro.detalhes == {
+        "excluida": {"numero": 1, "acertou": True, "pontos": 100}
+    }

@@ -8,20 +8,47 @@ from sqlalchemy import (
     LargeBinary,
     DateTime,
     ForeignKey,
+    Index,
+    JSON,
+    Table,
 )
 from sqlalchemy.orm import relationship
 from database import Base
+
+
+questao_tags = Table(
+    "questao_tags",
+    Base.metadata,
+    Column(
+        "questao_id",
+        Integer,
+        ForeignKey("questoes.id", ondelete="CASCADE"),
+        primary_key=True,
+    ),
+    Column(
+        "tag_id",
+        Integer,
+        ForeignKey("tags.id", ondelete="CASCADE"),
+        primary_key=True,
+    ),
+)
 
 
 class User(Base):
     __tablename__ = "users"
 
     id = Column(Integer, primary_key=True, autoincrement=True)
+    nome = Column(String(100), nullable=True)
     username = Column(String(50), unique=True, nullable=False)
     password_hash = Column(String(128), nullable=False)
     role = Column(String(10), nullable=False)  # "admin" or "juiz"
     must_change_password = Column(Boolean, nullable=False, default=False)
     created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+    login_sessions = relationship(
+        "LoginSession",
+        back_populates="user",
+        cascade="all, delete-orphan",
+    )
 
 
 
@@ -59,10 +86,53 @@ class Questao(Base):
 
     regata = relationship("Regata", back_populates="questoes")
     tentativas = relationship("Tentativa", back_populates="questao")
+    tags = relationship("Tag", secondary=questao_tags, back_populates="questoes")
+
+
+class Tag(Base):
+    __tablename__ = "tags"
+    __table_args__ = (
+        Index("uq_tags_categoria_nome", "categoria", "nome", unique=True),
+    )
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    nome = Column(String(50), nullable=False)
+    categoria = Column(String(20), nullable=False)
+
+    questoes = relationship("Questao", secondary=questao_tags, back_populates="tags")
+
+
+class LoginSession(Base):
+    __tablename__ = "login_sessions"
+    __table_args__ = (
+        Index("uq_login_sessions_token_hash", "token_hash", unique=True),
+    )
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    user_id = Column(
+        Integer,
+        ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    token_hash = Column(String(64), nullable=False)
+    created_at = Column(DateTime(timezone=True), nullable=False)
+    expires_at = Column(DateTime(timezone=True), nullable=False)
+    revoked_at = Column(DateTime(timezone=True), nullable=True)
+
+    user = relationship("User", back_populates="login_sessions")
 
 
 class Tentativa(Base):
     __tablename__ = "tentativas"
+    __table_args__ = (
+        Index(
+            "uq_tentativas_equipe_questao_numero",
+            "equipe_id",
+            "questao_id",
+            "numero",
+            unique=True,
+        ),
+    )
 
     id = Column(Integer, primary_key=True, autoincrement=True)
     equipe_id = Column(Integer, ForeignKey("equipes.id"), nullable=False)
@@ -71,7 +141,38 @@ class Tentativa(Base):
     acertou = Column(Boolean, nullable=False)
     pontos = Column(Integer, nullable=False, default=0)
     juiz_id = Column(Integer, nullable=False)
-    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+    created_at = Column(
+        DateTime(timezone=True),
+        default=lambda: datetime.now(timezone.utc),
+    )
 
     equipe = relationship("Equipe", back_populates="tentativas")
     questao = relationship("Questao", back_populates="tentativas")
+
+
+class AuditLog(Base):
+    __tablename__ = "audit_log"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    ator_id = Column(Integer, nullable=False)
+    ator_role = Column(String(10), nullable=False)
+    equipe_id = Column(Integer, nullable=False)
+    tentativa_id = Column(Integer, nullable=False)
+    acao = Column(String(20), nullable=False)
+    detalhes = Column(JSON, nullable=False)
+    created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+
+
+class QuestaoLock(Base):
+    __tablename__ = "questao_locks"
+
+    questao_id = Column(
+        Integer,
+        ForeignKey("questoes.id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    session_token = Column(String(64), nullable=False)
+    ator_id = Column(Integer, nullable=False)
+    nome_ator = Column(String(100), nullable=False)
+    expires_at = Column(DateTime(timezone=True), nullable=False)
+    updated_at = Column(DateTime(timezone=True), nullable=False)

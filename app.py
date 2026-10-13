@@ -1,5 +1,6 @@
 import streamlit as st
-from database import init_db
+from database import get_db, init_db
+from question_locking import liberar_reserva_ao_sair_da_tela
 import importlib.util
 import sys
 
@@ -118,6 +119,13 @@ with st.sidebar:
     st.markdown("© 2026 NEMPA - UFBA")
 
 # --- CARREGAR PÁGINA SELECIONADA ---
+if st.session_state.current_page != "juiz":
+    db_saida = get_db()
+    try:
+        liberar_reserva_ao_sair_da_tela(db_saida, st.session_state)
+    finally:
+        db_saida.close()
+
 if st.session_state.current_page == "home":
     st.markdown(
         """

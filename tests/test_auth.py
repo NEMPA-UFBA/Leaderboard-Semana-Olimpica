@@ -1,6 +1,10 @@
 from types import SimpleNamespace
+from datetime import datetime, timedelta, timezone
+import hashlib
 
 import pytest
+from sqlalchemy import create_engine
+from sqlalchemy.orm import sessionmaker
 from streamlit.testing.v1 import AppTest
 
 from auth import (
@@ -9,6 +13,21 @@ from auth import (
     password_validation_error,
     verify_password,
 )
+from login_sessions import buscar_sessao_login, criar_sessao_login, revogar_sessao_login
+from models import Base, LoginSession, User
+
+
+@pytest.fixture
+def login_db():
+    engine = create_engine("sqlite:///:memory:")
+    Base.metadata.create_all(engine)
+    db = sessionmaker(bind=engine, expire_on_commit=False)()
+    user = User(username="juiz", password_hash="hash", role="juiz")
+    db.add(user)
+    db.commit()
+    yield db, user
+    db.close()
+    engine.dispose()
 
 
 def test_hash_and_verify_password():
@@ -55,6 +74,30 @@ def test_change_password_rejects_reusing_current_password():
         change_password(user, current_password)
 
 
+def test_login_session_stores_only_token_hash_and_expires_after_12_hours(login_db):
+    db, user = login_db
+    now = datetime(2026, 10, 13, tzinfo=timezone.utc)
+
+    token, expires_at = criar_sessao_login(db, user.id, agora=now)
+
+    stored_session = db.query(LoginSession).one()
+    assert stored_session.token_hash == hashlib.sha256(token.encode("utf-8")).hexdigest()
+    assert stored_session.expires_at.replace(tzinfo=timezone.utc) == (
+        now + timedelta(hours=12)
+    )
+    assert buscar_sessao_login(db, token, agora=expires_at - timedelta(seconds=1))
+    assert buscar_sessao_login(db, token, agora=expires_at) is None
+
+
+def test_login_session_can_be_revoked(login_db):
+    db, user = login_db
+    token, _ = criar_sessao_login(db, user.id)
+
+    assert revogar_sessao_login(db, token) is True
+    assert buscar_sessao_login(db, token) is None
+    assert revogar_sessao_login(db, token) is False
+
+
 def test_forced_password_change_survives_streamlit_reruns(tmp_path):
     database_path = str(tmp_path / "auth-flow.sqlite")
     app = AppTest.from_string(
@@ -62,7 +105,7 @@ def test_forced_password_change_survives_streamlit_reruns(tmp_path):
 import streamlit as st
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
-from auth import hash_password, login_form
+from auth import hash_password, login_form, logout_user
 from models import Base, User
 
 @st.cache_resource
@@ -84,7 +127,7 @@ db = get_session_factory()()
 if login_form(db, User):
     st.success("LOGIN_OK")
     if st.button("Sair"):
-        st.session_state.pop("user", None)
+        logout_user(db)
         st.rerun()
 db.close()
 """

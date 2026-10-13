@@ -1,17 +1,33 @@
 import argparse
+import json
 import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
 
-from sqlalchemy import Boolean, DateTime, func, inspect, select, text
+from sqlalchemy import Boolean, DateTime, JSON, func, inspect, select, text
 from sqlalchemy.engine import Engine
 
 from database import DB_PATH, engine
 from models import Base
 
-TABLE_ORDER = ("users", "equipes", "regatas", "questoes", "tentativas")
+TABLE_ORDER = (
+    "users",
+    "equipes",
+    "regatas",
+    "questoes",
+    "tags",
+    "questao_tags",
+    "tentativas",
+    "audit_log",
+)
+OPTIONAL_TABLES = {"audit_log", "tags", "questao_tags"}
+REQUIRED_TABLES = set(TABLE_ORDER) - OPTIONAL_TABLES
+IGNORED_TABLES = {"questao_locks", "login_sessions"}
 DEFAULT_SOURCE = Path(DB_PATH)
 DEFAULT_COLUMNS = {"enunciado", "must_change_password"}
+SEQUENCE_TABLES = tuple(
+    name for name in TABLE_ORDER if name not in {"questao_tags"}
+)
 
 
 def _read_source(source_path: Path) -> tuple[dict[str, int], dict[str, list[dict]]]:
@@ -30,8 +46,8 @@ def _read_source(source_path: Path) -> tuple[dict[str, int], dict[str, list[dict
                 "WHERE type = 'table' AND name NOT LIKE 'sqlite_%'"
             )
         }
-        missing_tables = set(TABLE_ORDER) - source_tables
-        extra_tables = source_tables - set(TABLE_ORDER)
+        missing_tables = REQUIRED_TABLES - source_tables
+        extra_tables = source_tables - set(TABLE_ORDER) - IGNORED_TABLES
         if missing_tables or extra_tables:
             raise RuntimeError(
                 "O esquema SQLite nao corresponde ao esperado. "
@@ -40,13 +56,21 @@ def _read_source(source_path: Path) -> tuple[dict[str, int], dict[str, list[dict
             )
 
         conn.row_factory = sqlite3.Row
-        rows = {
-            name: [
+        rows = {}
+        for name in TABLE_ORDER:
+            if name not in source_tables:
+                rows[name] = []
+                continue
+            columns = {
+                row[1] for row in conn.execute(f'PRAGMA table_info("{name}")')
+            }
+            order_by = "id" if "id" in columns else "questao_id, tag_id"
+            rows[name] = [
                 dict(row)
-                for row in conn.execute(f'SELECT * FROM "{name}" ORDER BY id')
+                for row in conn.execute(
+                    f'SELECT * FROM "{name}" ORDER BY {order_by}'
+                )
             ]
-            for name in TABLE_ORDER
-        }
 
     counts = {name: len(rows[name]) for name in TABLE_ORDER}
     return counts, rows
@@ -72,8 +96,14 @@ def _prepare_row(table_name: str, row: dict, target_table) -> dict:
         elif value is not None and isinstance(column_type, DateTime):
             if isinstance(value, str):
                 value = datetime.fromisoformat(value)
-            if value.tzinfo is not None:
+            if column_type.timezone and value.tzinfo is None:
+                value = value.replace(tzinfo=timezone.utc)
+            elif column_type.timezone:
+                value = value.astimezone(timezone.utc)
+            elif value.tzinfo is not None:
                 value = value.astimezone(timezone.utc).replace(tzinfo=None)
+        elif value is not None and isinstance(column_type, JSON):
+            value = json.loads(value) if isinstance(value, str) else value
         prepared[name] = value
 
     if "enunciado" in missing_columns:
@@ -125,7 +155,7 @@ def copy_sqlite_database(source_path: Path, target_engine: Engine) -> dict[str, 
                 connection.execute(table.insert(), prepared_rows)
 
         if target_engine.dialect.name == "postgresql":
-            _reset_postgres_sequences(connection, TABLE_ORDER)
+            _reset_postgres_sequences(connection, SEQUENCE_TABLES)
 
         target_counts = {
             name: connection.execute(

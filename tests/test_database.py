@@ -118,3 +118,70 @@ def test_migrate_existing_users_table_adds_password_change_flag(
             text("SELECT must_change_password FROM users WHERE username = 'existing-judge'")
         ).scalar_one()
     assert value == 0
+
+
+def test_migrate_existing_users_table_adds_and_backfills_name(
+    isolated_database,
+):
+    with isolated_database.begin() as conn:
+        conn.execute(
+            text(
+                "CREATE TABLE users ("
+                "id INTEGER PRIMARY KEY, "
+                "username VARCHAR(50) NOT NULL, "
+                "password_hash VARCHAR(128) NOT NULL, "
+                "role VARCHAR(10) NOT NULL)"
+            )
+        )
+        conn.execute(
+            text(
+                "INSERT INTO users (username, password_hash, role) "
+                "VALUES ('juiz_teste', 'hash', 'juiz')"
+            )
+        )
+
+    database._ensure_user_name_migration()
+
+    with isolated_database.connect() as conn:
+        nome = conn.execute(
+            text("SELECT nome FROM users WHERE username = 'juiz_teste'")
+        ).scalar_one()
+    assert nome == "juiz_teste"
+
+
+def test_attempt_number_index_is_created_and_unique(isolated_database):
+    Base.metadata.create_all(bind=isolated_database)
+    with isolated_database.begin() as conn:
+        conn.execute(
+            text("DROP INDEX uq_tentativas_equipe_questao_numero")
+        )
+
+    database._ensure_attempt_unique_index()
+
+    index = next(
+        index
+        for index in inspect(isolated_database).get_indexes("tentativas")
+        if index["name"] == "uq_tentativas_equipe_questao_numero"
+    )
+    assert bool(index["unique"]) is True
+
+
+def test_attempt_index_migration_rejects_preexisting_duplicates(
+    isolated_database,
+):
+    Base.metadata.create_all(bind=isolated_database)
+    with isolated_database.begin() as conn:
+        conn.execute(
+            text("DROP INDEX uq_tentativas_equipe_questao_numero")
+        )
+        for _ in range(2):
+            conn.execute(
+                text(
+                    "INSERT INTO tentativas "
+                    "(equipe_id, questao_id, numero, acertou, pontos, juiz_id) "
+                    "VALUES (1, 1, 1, 0, 0, 1)"
+                )
+            )
+
+    with pytest.raises(RuntimeError, match="tentativas duplicadas"):
+        database._ensure_attempt_unique_index()

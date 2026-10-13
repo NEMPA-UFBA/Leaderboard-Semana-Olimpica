@@ -1,7 +1,11 @@
+import logging
+from datetime import datetime, timezone
+from urllib.parse import urlparse
+
 import bcrypt
 import extra_streamlit_components as stx
 import streamlit as st
-from urllib.parse import urlparse
+from sqlalchemy.exc import OperationalError
 
 from login_sessions import (
     COOKIE_NAME,
@@ -13,6 +17,7 @@ from login_sessions import (
 MIN_PASSWORD_LENGTH = 12
 MAX_PASSWORD_BYTES = 72
 _PENDING_PASSWORD_CHANGE = "pending_password_change_user_id"
+logger = logging.getLogger(__name__)
 
 
 def hash_password(password: str) -> str:
@@ -58,12 +63,17 @@ def _cookie_manager(key: str = "batalha_auth_cookie_manager"):
 
 def _write_session_cookie(cookie_manager, token: str, expires_at) -> None:
     scheme = urlparse(getattr(st.context, "url", "")).scheme
+    max_age = int(
+        (expires_at - datetime.now(timezone.utc)).total_seconds()
+    )
+    if max_age <= 0:
+        raise ValueError("A sessao de login ja expirou antes de criar o cookie.")
     cookie_manager.set(
         COOKIE_NAME,
         token,
         key="batalha_auth_cookie_set",
         path="/",
-        expires_at=expires_at,
+        max_age=max_age,
         secure=scheme == "https",
         same_site="lax",
     )
@@ -91,6 +101,22 @@ def _establish_login(db_session, user, cookie_manager) -> None:
         "role": user.role,
     }
     st.session_state.pop(_PENDING_PASSWORD_CHANGE, None)
+
+
+def _find_user_for_login(db_session, User, username: str):
+    try:
+        return db_session.query(User).filter_by(username=username).first()
+    except OperationalError as error:
+        sqlstate = getattr(error.orig, "sqlstate", None) or getattr(
+            error.orig, "pgcode", None
+        )
+        logger.warning(
+            "A consulta de usuario falhou durante o login; "
+            "tentando novamente uma vez (SQLSTATE: %s).",
+            sqlstate or "indisponivel",
+        )
+        db_session.rollback()
+        return db_session.query(User).filter_by(username=username).first()
 
 
 def logout_user(db_session) -> None:
@@ -235,7 +261,7 @@ def login_form(db_session, User):
             if not username or not password:
                 st.error("Preencha usuario e senha.")
             else:
-                user = db_session.query(User).filter_by(username=username).first()
+                user = _find_user_for_login(db_session, User, username)
                 if user and verify_password(password, user.password_hash):
                     if user.must_change_password:
                         st.session_state[_PENDING_PASSWORD_CHANGE] = user.id

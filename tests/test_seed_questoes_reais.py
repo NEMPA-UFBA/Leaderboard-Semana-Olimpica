@@ -30,6 +30,7 @@ def _payload():
                     {
                         "ordem": 1,
                         "nivel": "facil",
+                        "rotulo": "Coloracao de grafo",
                         "enunciado": "Questao um",
                         "imagem": "static/q1.png",
                         "gabarito": "Resposta privada",
@@ -135,3 +136,115 @@ def test_judge_seed_forces_password_change_and_skips_existing_users(seed_db):
     assert user.role == "juiz"
     assert user.must_change_password is True
     assert user.password_hash == existing_password_hash
+
+
+def test_question_catalog_preserves_codes_and_requested_order():
+    catalog = seed._catalogo_questoes(_payload()["regatas"])
+
+    selected = seed._selecionar_questoes_catalogo(
+        catalog, ["R1Q2", "R1Q1"]
+    )
+
+    assert [question["_codigo_catalogo"] for question in selected] == [
+        "R1Q2",
+        "R1Q1",
+    ]
+    assert [question["ordem"] for question in selected] == [1, 2]
+    assert "Coloracao de grafo" in seed._rotulo_questao_catalogo(catalog[0])
+
+
+@pytest.mark.parametrize(
+    ("codes", "message"),
+    [
+        (["R1Q1", "R1Q1"], "unica vez"),
+        (["R9Q1"], "desconhecido"),
+    ],
+)
+def test_question_catalog_rejects_duplicate_or_unknown_codes(codes, message):
+    catalog = seed._catalogo_questoes(_payload()["regatas"])
+
+    with pytest.raises(ValueError, match=message):
+        seed._selecionar_questoes_catalogo(catalog, codes)
+
+
+def test_interactive_question_catalog_does_not_print_statements_or_answers(
+    monkeypatch, capsys
+):
+    answers = iter(["Q", "Regata Seed Teste", "1", "R1Q1"])
+    monkeypatch.setattr("builtins.input", lambda _prompt: next(answers))
+
+    plan = seed._plano_interativo(_payload())
+    output = capsys.readouterr().out
+
+    assert plan["questoes_selecionadas"][0]["_codigo_catalogo"] == "R1Q1"
+    assert "Coloracao de grafo" in output
+    assert "Fácil" in output
+    assert "Matemática (disciplina)" in output
+    assert "q1.png" in output
+    assert "Questao um" not in output
+    assert "Resposta privada" not in output
+
+
+@pytest.mark.parametrize(
+    ("answers", "expected"),
+    [
+        (["J"], (True, False, False)),
+        (["R", "Nova"], (False, True, False)),
+        (["Q", "Destino", "1", "R1Q1"], (False, False, True)),
+        (["JR", "Nova"], (True, True, False)),
+        (["JQ", "Destino", "1", "R1Q1"], (True, False, True)),
+        (["RQ", "Nova", "1", "R1Q1"], (False, True, True)),
+        (["JRQ", "Nova", "1", "R1Q1"], (True, True, True)),
+    ],
+)
+def test_interactive_plan_supports_each_component_combination(
+    monkeypatch, answers, expected
+):
+    responses = iter(answers)
+    monkeypatch.setattr("builtins.input", lambda _prompt: next(responses))
+
+    plan = seed._plano_interativo(_payload())
+
+    assert (plan["juizes"], plan["criar_regata"], plan["questoes"]) == expected
+
+
+def test_interactive_regatta_seed_creates_inactive_regatta_idempotently(seed_db):
+    first = seed._seed_regatta_only(seed_db, Regata, "Regata Demonstracao")
+    seed_db.commit()
+    second = seed._seed_regatta_only(seed_db, Regata, "Regata Demonstracao")
+    seed_db.commit()
+
+    regatta = seed_db.query(Regata).one()
+    assert first == (1, 0)
+    assert second == (0, 1)
+    assert regatta.ativa is False
+
+
+def test_interactive_regatta_seed_refuses_existing_active_regatta(seed_db):
+    seed_db.add(Regata(nome="Regata Demonstracao", ativa=True))
+    seed_db.commit()
+
+    with pytest.raises(RuntimeError, match="esta ativa"):
+        seed._seed_regatta_only(seed_db, Regata, "Regata Demonstracao")
+
+
+def test_interactive_question_destination_must_exist_and_be_inactive(seed_db):
+    with pytest.raises(LookupError, match="nao foi encontrada"):
+        seed._validar_regata_destino(
+            seed_db, Regata, "Regata Ausente", required=True
+        )
+
+    seed._validar_regata_destino(
+        seed_db, Regata, "Regata Nova", required=False
+    )
+    seed_db.add(Regata(nome="Regata Inativa", ativa=False))
+    seed_db.add(Regata(nome="Regata Ativa", ativa=True))
+    seed_db.commit()
+
+    seed._validar_regata_destino(
+        seed_db, Regata, "Regata Inativa", required=True
+    )
+    with pytest.raises(RuntimeError, match="esta ativa"):
+        seed._validar_regata_destino(
+            seed_db, Regata, "Regata Ativa", required=True
+        )

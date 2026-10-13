@@ -71,6 +71,7 @@ def _load_seed_data() -> dict[str, Any]:
             level = question.get("nivel")
             statement = question.get("enunciado")
             answer = question.get("gabarito")
+            label = question.get("rotulo")
             image = question.get("imagem")
             tags = question.get("tags", [])
             if not isinstance(order, int) or order < 1:
@@ -84,6 +85,10 @@ def _load_seed_data() -> dict[str, Any]:
                 raise ValueError(
                     f"Gabarito ausente no arquivo privado da regata {name!r}."
                 )
+            if label is not None and (
+                not isinstance(label, str) or not label.strip()
+            ):
+                raise ValueError(f"Rotulo invalido na regata {name!r}.")
             if image is not None and not isinstance(image, str):
                 raise ValueError(f"Caminho de imagem invalido na regata {name!r}.")
             if not isinstance(tags, list):
@@ -383,6 +388,246 @@ def _seed_judges(
     return created, existing
 
 
+def _catalogo_questoes(regattas: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    catalog: list[dict[str, Any]] = []
+    for regatta_index, regatta in enumerate(regattas, start=1):
+        for question in sorted(regatta["questoes"], key=lambda item: item["ordem"]):
+            catalog.append(
+                {
+                    "codigo": f"R{regatta_index}Q{question['ordem']}",
+                    "regata_origem": regatta["nome"],
+                    "questao": question,
+                }
+            )
+    return catalog
+
+
+def _rotulo_questao_catalogo(item: dict[str, Any]) -> str:
+    question = item["questao"]
+    difficulty = {
+        "facil": "Fácil",
+        "medio": "Médio",
+        "dificil": "Difícil",
+    }[question["nivel"]]
+    tags = ", ".join(
+        f"{tag['nome']} ({tag['categoria']})"
+        for tag in question.get("tags", [])
+    ) or "sem tags"
+    image = Path(question["imagem"]).name if question.get("imagem") else "sem imagem"
+    label = f"{question['rotulo']} | " if question.get("rotulo") else ""
+    return (
+        f"{item['codigo']} | {label}{item['regata_origem']} | {difficulty} | "
+        f"{tags} | imagem: {image}"
+    )
+
+
+def _selecionar_questoes_catalogo(
+    catalog: list[dict[str, Any]], codes: list[str]
+) -> list[dict[str, Any]]:
+    by_code = {item["codigo"]: item for item in catalog}
+    if len(codes) != len(set(codes)):
+        raise ValueError("Cada questao deve aparecer uma unica vez na selecao.")
+
+    unknown_codes = [code for code in codes if code not in by_code]
+    if unknown_codes:
+        raise ValueError(
+            "Codigo(s) de questao desconhecido(s): " + ", ".join(unknown_codes)
+        )
+
+    selected = []
+    for order, code in enumerate(codes, start=1):
+        source_question = by_code[code]["questao"]
+        question = {
+            **source_question,
+            "ordem": order,
+            "_codigo_catalogo": code,
+            "tags": [
+                dict(tag) for tag in source_question.get("tags", [])
+            ],
+        }
+        selected.append(question)
+    return selected
+
+
+def _plano_interativo(
+    payload: dict[str, Any],
+) -> dict[str, Any]:
+    raw_components = input(
+        "O que incluir? J=juizes, R=regata, Q=questoes "
+        "(combine, por exemplo JRQ): "
+    )
+    components = set(raw_components.upper().replace(",", "").replace(" ", ""))
+    if not components or not components <= {"J", "R", "Q"}:
+        raise ValueError("Escolha uma ou mais opcoes entre J, R e Q.")
+
+    include_judges = "J" in components
+    include_regatta = "R" in components
+    include_questions = "Q" in components
+
+    if include_regatta:
+        regatta_name = input("Nome da nova regata (sera criada inativa): ").strip()
+        if not regatta_name:
+            raise ValueError("O nome da nova regata nao pode ficar vazio.")
+    elif include_questions:
+        regatta_name = input(
+            "Nome exato da regata existente que recebera as questoes: "
+        ).strip()
+        if not regatta_name:
+            raise ValueError("Informe o nome da regata de destino.")
+    else:
+        regatta_name = None
+
+    selected_questions: list[dict[str, Any]] = []
+    if include_questions:
+        catalog = _catalogo_questoes(payload["regatas"])
+        print("\nQuestoes disponiveis (enunciados e gabaritos nao sao exibidos):")
+        for item in catalog:
+            print("  " + _rotulo_questao_catalogo(item))
+
+        try:
+            count = int(input(f"Quantas questoes deseja selecionar? (1-{len(catalog)}): "))
+        except ValueError as error:
+            raise ValueError("Informe a quantidade como um numero inteiro.") from error
+        if count < 1 or count > len(catalog):
+            raise ValueError(
+                f"A quantidade deve estar entre 1 e {len(catalog)}."
+            )
+
+        raw_codes = input(
+            "Informe os codigos na ordem desejada, separados por virgula: "
+        )
+        codes = [code.strip().upper() for code in raw_codes.split(",") if code.strip()]
+        if len(codes) != count:
+            raise ValueError(
+                f"Voce informou {len(codes)} codigo(s), mas selecionou {count} questoes."
+            )
+        selected_questions = _selecionar_questoes_catalogo(catalog, codes)
+
+    return {
+        "juizes": include_judges,
+        "criar_regata": include_regatta,
+        "questoes": include_questions,
+        "nome_regata": regatta_name,
+        "questoes_selecionadas": selected_questions,
+    }
+
+
+def _seed_regatta_only(db: Session, regatta_model: type, name: str) -> tuple[int, int]:
+    matches = db.query(regatta_model).filter_by(nome=name).all()
+    if len(matches) > 1:
+        raise RuntimeError(f"Ha mais de uma regata chamada {name!r}.")
+    if matches:
+        if matches[0].ativa:
+            raise RuntimeError(
+                f"A regata {name!r} ja existe e esta ativa; nada foi alterado."
+            )
+        return 0, 1
+
+    db.add(regatta_model(nome=name, ativa=False))
+    db.flush()
+    return 1, 0
+
+
+def _validar_regata_destino(
+    db: Session,
+    regatta_model: type,
+    name: str,
+    *,
+    required: bool,
+) -> None:
+    matches = (
+        db.query(regatta_model)
+        .filter_by(nome=name)
+        .with_for_update()
+        .all()
+    )
+    if len(matches) > 1:
+        raise LookupError(f"Ha mais de uma regata chamada {name!r}.")
+    if not matches:
+        if required:
+            raise LookupError(f"A regata de destino {name!r} nao foi encontrada.")
+        return
+    if matches[0].ativa:
+        raise RuntimeError(
+            f"A regata {name!r} esta ativa; desative-a antes de inserir questoes."
+        )
+
+
+def _aplicar_plano_interativo(
+    plan: dict[str, Any],
+    payload: dict[str, Any],
+    images: dict[str, bytes],
+) -> None:
+    from auth import hash_password
+    from database import SessionLocal, init_db
+    from models import Questao, Regata, Tag, User
+    from question_tags import NIVEIS_TAG
+
+    init_db()
+
+    with SessionLocal() as db:
+        missing_judges = (
+            [
+                judge
+                for judge in payload["juizes"]
+                if _find_existing_judge(db, User, judge) is None
+            ]
+            if plan["juizes"]
+            else []
+        )
+
+    password_hash = None
+    if missing_judges:
+        password_hash = hash_password(_password_for_new_judges())
+
+    regattas_created = 0
+    regattas_existing = 0
+    questions_created = 0
+    judges_created = 0
+    judges_existing = 0
+
+    with SessionLocal.begin() as db:
+        if plan["questoes"]:
+            _validar_regata_destino(
+                db,
+                Regata,
+                plan["nome_regata"],
+                required=not plan["criar_regata"],
+            )
+            regattas_created, questions_created = _seed_questions(
+                db,
+                Regata,
+                Questao,
+                Tag,
+                {
+                    "regatas": [
+                        {
+                            "nome": plan["nome_regata"],
+                            "questoes": plan["questoes_selecionadas"],
+                        }
+                    ]
+                },
+                images,
+                NIVEIS_TAG,
+            )
+        elif plan["criar_regata"]:
+            regattas_created, regattas_existing = _seed_regatta_only(
+                db, Regata, plan["nome_regata"]
+            )
+
+        if plan["juizes"]:
+            judges_created, judges_existing = _seed_judges(
+                db, User, payload["juizes"], password_hash
+            )
+
+    print(
+        f"Concluido. Regatas novas: {regattas_created}; "
+        f"regatas ja existentes: {regattas_existing}; "
+        f"questoes novas: {questions_created}; "
+        f"juizes novos: {judges_created}; juizes ja existentes: {judges_existing}."
+    )
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(
         description="Insere regatas, questoes e juizes a partir de dados locais."
@@ -403,27 +648,75 @@ def main() -> int:
         action="store_true",
         help="Grava os dados. Sem esta opcao, apenas valida os arquivos.",
     )
+    parser.add_argument(
+        "--interactive",
+        action="store_true",
+        help="Escolhe juizes, regatas e questoes do catalogo privado.",
+    )
     args = parser.parse_args()
 
     if args.target == "production" and not args.confirm_production:
         parser.error("production exige a opcao --confirm-production.")
 
     payload = _load_seed_data()
-    images = _load_images(payload["regatas"])
+    plan = _plano_interativo(payload) if args.interactive else None
+    if plan and plan["questoes"]:
+        image_payload = [
+            {
+                "nome": plan["nome_regata"],
+                "questoes": plan["questoes_selecionadas"],
+            }
+        ]
+        images = _load_images(image_payload)
+    elif args.interactive:
+        images = {}
+    else:
+        images = _load_images(payload["regatas"])
     raw_url, parsed_url = _database_url(args.target, args.confirm_production)
     print(
         f"Alvo: {args.target}; PostgreSQL em "
         f"{parsed_url.host}/{parsed_url.database}."
     )
     print(
-        f"Plano: {len(payload['regatas'])} regatas, "
-        f"{sum(len(item['questoes']) for item in payload['regatas'])} questoes, "
-        f"{len(payload['juizes'])} contas de juiz."
-    )
-    print(
         f"Imagens locais verificadas: {', '.join(sorted(images)) or 'nenhuma'}."
     )
     print("Gabaritos permanecem no arquivo privado e nao sao gravados no banco.")
+
+    if plan is not None:
+        components = [
+            label
+            for included, label in (
+                (plan["juizes"], "juizes"),
+                (plan["criar_regata"], "regata nova"),
+                (plan["questoes"], "questoes"),
+            )
+            if included
+        ]
+        print("Plano: " + ", ".join(components) + ".")
+        if plan["nome_regata"]:
+            target_description = (
+                "nova e inativa"
+                if plan["criar_regata"]
+                else "existente"
+            )
+            print(
+                f"Regata {target_description}: {plan['nome_regata']}."
+            )
+        catalog_by_code = {
+            item["codigo"]: item
+            for item in _catalogo_questoes(payload["regatas"])
+        }
+        for order, question in enumerate(plan["questoes_selecionadas"], start=1):
+            source = catalog_by_code[question["_codigo_catalogo"]]
+            print(
+                f"  {order}. {_rotulo_questao_catalogo(source)}"
+            )
+    else:
+        print(
+            f"Plano: {len(payload['regatas'])} regatas, "
+            f"{sum(len(item['questoes']) for item in payload['regatas'])} "
+            f"questoes, {len(payload['juizes'])} contas de juiz."
+        )
 
     if not args.apply:
         print("Previa concluida; nenhum banco foi conectado ou alterado.")
@@ -432,6 +725,10 @@ def main() -> int:
 
     _confirm_target(args.target)
     os.environ["DATABASE_URL"] = raw_url
+
+    if plan is not None:
+        _aplicar_plano_interativo(plan, payload, images)
+        return 0
 
     from auth import hash_password
     from database import SessionLocal, init_db

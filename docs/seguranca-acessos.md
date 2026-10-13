@@ -21,6 +21,17 @@ Contas existentes que ainda usam a senha padrao antiga tambem sao obrigadas a
 troca-la antes de acessar o painel. Nunca adicione o valor real da chave a este
 repositorio, a arquivos de exemplo versionados, a logs ou a conversas.
 
+## Sessao de login
+
+Depois do login, o navegador recebe um token aleatorio com validade de ate 12
+horas; o banco armazena somente o hash desse token. Atualizar a pagina deve
+restaurar a sessao enquanto o cookie e o registro no banco ainda forem validos.
+O logout revoga o registro e remove o cookie.
+
+O cookie usa `SameSite=Lax` e `Secure` em conexoes HTTPS. Ele nao e `HttpOnly`,
+pois a implementacao atual usa um componente de cookies do Streamlit. Nao
+compartilhe o cookie e encerre a sessao ao usar um dispositivo compartilhado.
+
 ## Contas de juizes
 
 Crie as contas de juizes pela aba **Juizes** do painel de administrador. A senha

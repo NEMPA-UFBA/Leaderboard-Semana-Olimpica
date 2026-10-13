@@ -10,8 +10,13 @@ liberar_reserva_ao_sair_da_tela(db_saida, st.session_state)
 db_saida.close()
 
 
-@st.fragment(run_every=5)
+@st.fragment
 def questoes_fragment():
+    st.button(
+        "Atualizar questoes",
+        help="Use depois que o administrador trocar a regata ativa.",
+        key="atualizar_questoes_publicas",
+    )
     db = get_db()
     regata = db.query(Regata).filter_by(ativa=True).first()
 
@@ -60,7 +65,7 @@ def questoes_fragment():
             if questao.enunciado:
                 st.markdown(questao.enunciado)
             if questao.imagem:
-                st.image(questao.imagem, use_container_width=True)
+                st.image(questao.imagem, width=600)
 
     db.close()
 

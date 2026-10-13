@@ -14,7 +14,7 @@ from question_utils import numerar_questoes, ordenar_questoes, rotulo_questao
 from team_utils import (
     criar_equipes_automaticamente,
     excluir_equipes,
-    ordenar_equipes,
+    ordenar_equipes_gregas,
 )
 from question_tags import atualizar_tags_questao
 from question_locking import liberar_reserva_ao_sair_da_tela
@@ -200,7 +200,7 @@ with tab_equipes:
 
     with col_list:
         st.markdown("#### Equipes cadastradas")
-        equipes = ordenar_equipes(db.query(Equipe).all())
+        equipes = ordenar_equipes_gregas(db.query(Equipe).all())
         equipes_com_tentativas = {
             equipe_id
             for (equipe_id,) in (

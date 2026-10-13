@@ -5,6 +5,7 @@ from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 from models import AuditLog, QuestaoLock, Tentativa, Equipe
 from question_locking import RESERVA_DURACAO
+from team_utils import chave_ordenacao_equipe
 
 PONTOS_POR_TENTATIVA = {1: 100, 2: 80, 3: 50}
 
@@ -136,6 +137,9 @@ def calcular_leaderboard(db: Session) -> list[dict]:
         .order_by(func.sum(Tentativa.pontos).desc())
         .all()
     )
+
+    if db.query(Tentativa.id).first() is None:
+        results.sort(key=lambda item: chave_ordenacao_equipe(item[0]))
 
     return [{"equipe": nome, "pontos": pontos} for nome, pontos in results]
 

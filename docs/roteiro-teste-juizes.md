@@ -59,6 +59,13 @@ Uma questão pode ficar reservada por até 90 segundos sem renovação. Enquanto
 painel está aberto, a reserva é renovada automaticamente. Ao terminar, usem
 **Liberar esta questão**, em vez de deixar uma reserva ativa.
 
+Ao trocar de equipe mantendo a mesma questão, a reserva deve ser liberada e a
+questão deve ficar disponível; para continuar os lançamentos nessa questão, o
+juiz precisa clicar em **Assumir questão** novamente. Ao selecionar outra
+questão, a anterior deve ser liberada e a nova reservada se estiver disponível.
+Os botões **Acertou** e **Errou** mantêm a reserva para permitir as próximas
+tentativas da mesma equipe e questão.
+
 ## 4. Questões diferentes em paralelo
 
 Com dois juízes:

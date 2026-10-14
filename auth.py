@@ -1,5 +1,6 @@
 import logging
 from datetime import datetime, timezone
+from typing import Any
 from urllib.parse import urlparse
 
 import bcrypt
@@ -59,6 +60,19 @@ def require_auth(allowed_roles: list[str]) -> dict | None:
 
 def _cookie_manager(key: str = "batalha_auth_cookie_manager"):
     return stx.CookieManager(key=key)
+
+
+def _read_browser_session_cookie() -> tuple[str | None, Any | None]:
+    cookie_value = st.context.cookies.get(COOKIE_NAME)
+    if isinstance(cookie_value, str) and cookie_value:
+        return cookie_value, None
+
+    cookie_manager = _cookie_manager()
+    cookies = cookie_manager.cookies or {}
+    cookie_value = cookies.get(COOKIE_NAME)
+    if isinstance(cookie_value, str) and cookie_value:
+        return cookie_value, cookie_manager
+    return None, cookie_manager
 
 
 def _write_session_cookie(cookie_manager, token: str, expires_at) -> None:
@@ -167,16 +181,11 @@ def login_form(db_session, User):
     session_user = st.session_state.get("user")
     token = st.session_state.get("auth_session_token")
     token_from_cookie = False
+    cookie_manager = None
     if not token:
-        cookie_value = st.context.cookies.get(COOKIE_NAME)
-        token = (
-            cookie_value
-            if isinstance(cookie_value, str) and cookie_value
-            else None
-        )
+        token, cookie_manager = _read_browser_session_cookie()
         token_from_cookie = token is not None
 
-    cookie_manager = None
     if token:
         login_session = buscar_sessao_login(db_session, token)
         user = (

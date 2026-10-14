@@ -125,6 +125,51 @@ def test_login_cookie_uses_numeric_max_age(monkeypatch):
     assert calls["options"]["sameSite"] == "lax"
 
 
+def test_login_restores_session_from_cookie_manager_when_server_cookie_is_missing(
+    monkeypatch,
+):
+    token = "browser-cookie-token"
+    user = SimpleNamespace(
+        id=17,
+        username="juiz",
+        role="juiz",
+        must_change_password=False,
+    )
+    state = {}
+    cookie_manager = SimpleNamespace(cookies={auth.COOKIE_NAME: token})
+
+    monkeypatch.setattr(
+        auth,
+        "st",
+        SimpleNamespace(
+            session_state=state,
+            context=SimpleNamespace(cookies={}),
+        ),
+    )
+    monkeypatch.setattr(auth, "_cookie_manager", lambda key=None: cookie_manager)
+    monkeypatch.setattr(
+        auth,
+        "buscar_sessao_login",
+        lambda db, value: (
+            SimpleNamespace(user_id=user.id) if value == token else None
+        ),
+    )
+
+    class LoginDatabase:
+        def get(self, model, user_id):
+            assert model is User
+            assert user_id == user.id
+            return user
+
+    assert auth.login_form(LoginDatabase(), User) is True
+    assert state["auth_session_token"] == token
+    assert state["user"] == {
+        "id": user.id,
+        "username": user.username,
+        "role": user.role,
+    }
+
+
 def test_login_user_lookup_retries_one_operational_error(caplog):
     expected_user = object()
 

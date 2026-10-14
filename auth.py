@@ -68,14 +68,22 @@ def _write_session_cookie(cookie_manager, token: str, expires_at) -> None:
     )
     if max_age <= 0:
         raise ValueError("A sessao de login ja expirou antes de criar o cookie.")
-    cookie_manager.set(
-        COOKIE_NAME,
-        token,
+    expires = expires_at.astimezone(timezone.utc).strftime(
+        "%a, %d %b %Y %H:%M:%S GMT"
+    )
+    cookie_manager.cookie_manager(
+        method="set",
+        cookie=COOKIE_NAME,
+        value=token,
+        options={
+            "path": "/",
+            "expires": expires,
+            "maxAge": max_age,
+            "secure": scheme == "https",
+            "sameSite": "lax",
+        },
         key="batalha_auth_cookie_set",
-        path="/",
-        max_age=max_age,
-        secure=scheme == "https",
-        same_site="lax",
+        default=False,
     )
 
 

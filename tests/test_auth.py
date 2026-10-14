@@ -104,9 +104,8 @@ def test_login_cookie_uses_numeric_max_age(monkeypatch):
     calls = {}
 
     class CookieManager:
-        def set(self, *args, **kwargs):
-            calls["args"] = args
-            calls["kwargs"] = kwargs
+        def cookie_manager(self, **kwargs):
+            calls.update(kwargs)
 
     monkeypatch.setattr(
         auth,
@@ -117,11 +116,13 @@ def test_login_cookie_uses_numeric_max_age(monkeypatch):
 
     auth._write_session_cookie(CookieManager(), "opaque-token", expires_at)
 
-    assert calls["args"][:2] == ("batalha_login", "opaque-token")
-    assert 0 < calls["kwargs"]["max_age"] <= 12 * 60 * 60
-    assert "expires_at" not in calls["kwargs"]
-    assert calls["kwargs"]["secure"] is True
-    assert calls["kwargs"]["same_site"] == "lax"
+    assert calls["method"] == "set"
+    assert calls["cookie"] == "batalha_login"
+    assert calls["value"] == "opaque-token"
+    assert 0 < calls["options"]["maxAge"] <= 12 * 60 * 60
+    assert "expires" not in calls["options"]
+    assert calls["options"]["secure"] is True
+    assert calls["options"]["sameSite"] == "lax"
 
 
 def test_login_user_lookup_retries_one_operational_error(caplog):

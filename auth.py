@@ -1,7 +1,12 @@
+import logging
+from datetime import datetime, timezone
+from typing import Any
+from urllib.parse import urlparse
+
 import bcrypt
 import extra_streamlit_components as stx
 import streamlit as st
-from urllib.parse import urlparse
+from sqlalchemy.exc import OperationalError
 
 from login_sessions import (
     COOKIE_NAME,
@@ -13,6 +18,7 @@ from login_sessions import (
 MIN_PASSWORD_LENGTH = 12
 MAX_PASSWORD_BYTES = 72
 _PENDING_PASSWORD_CHANGE = "pending_password_change_user_id"
+logger = logging.getLogger(__name__)
 
 
 def hash_password(password: str) -> str:
@@ -56,16 +62,42 @@ def _cookie_manager(key: str = "batalha_auth_cookie_manager"):
     return stx.CookieManager(key=key)
 
 
+def _read_browser_session_cookie() -> tuple[str | None, Any | None]:
+    cookie_value = st.context.cookies.get(COOKIE_NAME)
+    if isinstance(cookie_value, str) and cookie_value:
+        return cookie_value, None
+
+    cookie_manager = _cookie_manager()
+    cookies = cookie_manager.cookies or {}
+    cookie_value = cookies.get(COOKIE_NAME)
+    if isinstance(cookie_value, str) and cookie_value:
+        return cookie_value, cookie_manager
+    return None, cookie_manager
+
+
 def _write_session_cookie(cookie_manager, token: str, expires_at) -> None:
     scheme = urlparse(getattr(st.context, "url", "")).scheme
-    cookie_manager.set(
-        COOKIE_NAME,
-        token,
+    max_age = int(
+        (expires_at - datetime.now(timezone.utc)).total_seconds()
+    )
+    if max_age <= 0:
+        raise ValueError("A sessao de login ja expirou antes de criar o cookie.")
+    expires = expires_at.astimezone(timezone.utc).strftime(
+        "%a, %d %b %Y %H:%M:%S GMT"
+    )
+    cookie_manager.cookie_manager(
+        method="set",
+        cookie=COOKIE_NAME,
+        value=token,
+        options={
+            "path": "/",
+            "expires": expires,
+            "maxAge": max_age,
+            "secure": scheme == "https",
+            "sameSite": "lax",
+        },
         key="batalha_auth_cookie_set",
-        path="/",
-        expires_at=expires_at,
-        secure=scheme == "https",
-        same_site="lax",
+        default=False,
     )
 
 
@@ -91,6 +123,22 @@ def _establish_login(db_session, user, cookie_manager) -> None:
         "role": user.role,
     }
     st.session_state.pop(_PENDING_PASSWORD_CHANGE, None)
+
+
+def _find_user_for_login(db_session, User, username: str):
+    try:
+        return db_session.query(User).filter_by(username=username).first()
+    except OperationalError as error:
+        sqlstate = getattr(error.orig, "sqlstate", None) or getattr(
+            error.orig, "pgcode", None
+        )
+        logger.warning(
+            "A consulta de usuario falhou durante o login; "
+            "tentando novamente uma vez (SQLSTATE: %s).",
+            sqlstate or "indisponivel",
+        )
+        db_session.rollback()
+        return db_session.query(User).filter_by(username=username).first()
 
 
 def logout_user(db_session) -> None:
@@ -133,16 +181,11 @@ def login_form(db_session, User):
     session_user = st.session_state.get("user")
     token = st.session_state.get("auth_session_token")
     token_from_cookie = False
+    cookie_manager = None
     if not token:
-        cookie_value = st.context.cookies.get(COOKIE_NAME)
-        token = (
-            cookie_value
-            if isinstance(cookie_value, str) and cookie_value
-            else None
-        )
+        token, cookie_manager = _read_browser_session_cookie()
         token_from_cookie = token is not None
 
-    cookie_manager = None
     if token:
         login_session = buscar_sessao_login(db_session, token)
         user = (
@@ -213,14 +256,29 @@ def login_form(db_session, User):
 
     col1, col2, col3 = st.columns([1, 1.5, 1])
     with col2:
-        username = st.text_input("Usuario", placeholder="Digite seu usuario")
-        password = st.text_input("Senha", type="password", placeholder="Digite sua senha")
+        with st.form("login_form"):
+            username = st.text_input(
+                "Usuario",
+                placeholder="Digite seu usuario",
+                autocomplete="username",
+            )
+            password = st.text_input(
+                "Senha",
+                type="password",
+                placeholder="Digite sua senha",
+                autocomplete="current-password",
+            )
+            submitted = st.form_submit_button(
+                "Entrar",
+                use_container_width=True,
+                type="primary",
+            )
 
-        if st.button("Entrar", use_container_width=True, type="primary"):
+        if submitted:
             if not username or not password:
                 st.error("Preencha usuario e senha.")
             else:
-                user = db_session.query(User).filter_by(username=username).first()
+                user = _find_user_for_login(db_session, User, username)
                 if user and verify_password(password, user.password_hash):
                     if user.must_change_password:
                         st.session_state[_PENDING_PASSWORD_CHANGE] = user.id

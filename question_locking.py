@@ -110,6 +110,29 @@ def liberar_reserva_questao(
     return resultado.rowcount == 1
 
 
+def liberar_reserva_ao_trocar_equipe(
+    db: Session,
+    session_state: MutableMapping[str, Any],
+    equipe_anterior_id: int,
+    equipe_nova_id: int,
+    questao_id: int,
+    session_token: str,
+) -> bool:
+    if (
+        equipe_anterior_id == equipe_nova_id
+        or session_state.get("question_lock_id") != questao_id
+        or not session_state.get("question_lock_owned")
+    ):
+        return False
+
+    liberada = liberar_reserva_questao(db, questao_id, session_token)
+    session_state["question_lock_owned"] = False
+    session_state["question_lock_owner"] = None
+    session_state["question_lock_lost"] = not liberada
+    session_state.pop("question_lock_message", None)
+    return liberada
+
+
 def liberar_reserva_ao_sair_da_tela(
     db: Session, session_state: MutableMapping[str, Any]
 ) -> None:

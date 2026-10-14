@@ -4,9 +4,11 @@ import hashlib
 
 import pytest
 from sqlalchemy import create_engine
+from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import sessionmaker
 from streamlit.testing.v1 import AppTest
 
+import auth
 from auth import (
     change_password,
     hash_password,
@@ -96,6 +98,145 @@ def test_login_session_can_be_revoked(login_db):
     assert revogar_sessao_login(db, token) is True
     assert buscar_sessao_login(db, token) is None
     assert revogar_sessao_login(db, token) is False
+
+
+def test_login_cookie_uses_numeric_max_age(monkeypatch):
+    calls = {}
+
+    class CookieManager:
+        def cookie_manager(self, **kwargs):
+            calls.update(kwargs)
+
+    monkeypatch.setattr(
+        auth,
+        "st",
+        SimpleNamespace(context=SimpleNamespace(url="https://example.test")),
+    )
+    expires_at = datetime.now(timezone.utc) + timedelta(hours=12)
+
+    auth._write_session_cookie(CookieManager(), "opaque-token", expires_at)
+
+    assert calls["method"] == "set"
+    assert calls["cookie"] == "batalha_login"
+    assert calls["value"] == "opaque-token"
+    assert 0 < calls["options"]["maxAge"] <= 12 * 60 * 60
+    assert calls["options"]["expires"].endswith(" GMT")
+    assert calls["options"]["secure"] is True
+    assert calls["options"]["sameSite"] == "lax"
+
+
+def test_login_restores_session_from_cookie_manager_when_server_cookie_is_missing(
+    monkeypatch,
+):
+    token = "browser-cookie-token"
+    user = SimpleNamespace(
+        id=17,
+        username="juiz",
+        role="juiz",
+        must_change_password=False,
+    )
+    state = {}
+    cookie_manager = SimpleNamespace(cookies={auth.COOKIE_NAME: token})
+
+    monkeypatch.setattr(
+        auth,
+        "st",
+        SimpleNamespace(
+            session_state=state,
+            context=SimpleNamespace(cookies={}),
+        ),
+    )
+    monkeypatch.setattr(auth, "_cookie_manager", lambda key=None: cookie_manager)
+    monkeypatch.setattr(
+        auth,
+        "buscar_sessao_login",
+        lambda db, value: (
+            SimpleNamespace(user_id=user.id) if value == token else None
+        ),
+    )
+
+    class LoginDatabase:
+        def get(self, model, user_id):
+            assert model is User
+            assert user_id == user.id
+            return user
+
+    assert auth.login_form(LoginDatabase(), User) is True
+    assert state["auth_session_token"] == token
+    assert state["user"] == {
+        "id": user.id,
+        "username": user.username,
+        "role": user.role,
+    }
+
+
+def test_login_user_lookup_retries_one_operational_error(caplog):
+    expected_user = object()
+
+    class FlakySession:
+        attempts = 0
+        rollbacks = 0
+
+        def query(self, model):
+            assert model is User
+            return self
+
+        def filter_by(self, **filters):
+            assert filters == {"username": "admin"}
+            return self
+
+        def first(self):
+            self.attempts += 1
+            if self.attempts == 1:
+                raise OperationalError(
+                    "SELECT users",
+                    {"username": "admin"},
+                    OSError("connection interrupted"),
+                )
+            return expected_user
+
+        def rollback(self):
+            self.rollbacks += 1
+
+    session = FlakySession()
+
+    assert auth._find_user_for_login(session, User, "admin") is expected_user
+    assert session.attempts == 2
+    assert session.rollbacks == 1
+    assert "tentando novamente uma vez" in caplog.text
+
+
+def test_login_user_lookup_surfaces_operational_error_after_one_retry():
+    class UnavailableSession:
+        attempts = 0
+        rollbacks = 0
+
+        def query(self, model):
+            assert model is User
+            return self
+
+        def filter_by(self, **filters):
+            assert filters == {"username": "admin"}
+            return self
+
+        def first(self):
+            self.attempts += 1
+            raise OperationalError(
+                "SELECT users",
+                {"username": "admin"},
+                OSError("connection unavailable"),
+            )
+
+        def rollback(self):
+            self.rollbacks += 1
+
+    session = UnavailableSession()
+
+    with pytest.raises(OperationalError, match="connection unavailable"):
+        auth._find_user_for_login(session, User, "admin")
+
+    assert session.attempts == 2
+    assert session.rollbacks == 1
 
 
 def test_forced_password_change_survives_streamlit_reruns(tmp_path):

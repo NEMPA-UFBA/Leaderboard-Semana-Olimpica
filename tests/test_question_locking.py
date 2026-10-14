@@ -9,6 +9,7 @@ from models import QuestaoLock, Regata, Questao
 from question_locking import (
     RESERVA_DURACAO,
     liberar_reserva_ao_sair_da_tela,
+    liberar_reserva_ao_trocar_equipe,
     liberar_reserva_questao,
     renovar_reserva_questao,
     reservar_questao,
@@ -123,3 +124,63 @@ def test_sair_da_tela_libera_reserva_e_limpa_estado(db):
     assert reservar_questao(
         session, questao_id, 2, "Juiza Dois", "sessao-2"
     )["reservada"] is True
+
+
+def test_trocar_equipe_libera_reserva_sem_reassumir(db):
+    session, questao_id = db
+    reservar_questao(session, questao_id, 1, "Juiz Um", "sessao-1")
+    estado = {
+        "question_lock_id": questao_id,
+        "question_lock_session": "sessao-1",
+        "question_lock_owned": True,
+        "question_lock_owner": "Juiz Um",
+    }
+
+    liberada = liberar_reserva_ao_trocar_equipe(
+        session, estado, 1, 2, questao_id, "sessao-1"
+    )
+
+    assert liberada is True
+    assert estado["question_lock_id"] == questao_id
+    assert estado["question_lock_owned"] is False
+    assert estado["question_lock_owner"] is None
+    assert session.query(QuestaoLock).count() == 0
+    assert reservar_questao(
+        session, questao_id, 2, "Juiza Dois", "sessao-2"
+    )["reservada"] is True
+
+
+def test_trocar_equipe_sem_mudar_equipe_preserva_reserva(db):
+    session, questao_id = db
+    reservar_questao(session, questao_id, 1, "Juiz Um", "sessao-1")
+    estado = {
+        "question_lock_id": questao_id,
+        "question_lock_owned": True,
+        "question_lock_owner": "Juiz Um",
+    }
+
+    liberada = liberar_reserva_ao_trocar_equipe(
+        session, estado, 1, 1, questao_id, "sessao-1"
+    )
+
+    assert liberada is False
+    assert estado["question_lock_owned"] is True
+    assert session.query(QuestaoLock).count() == 1
+
+
+def test_trocar_equipe_nao_libera_reserva_de_outra_sessao(db):
+    session, questao_id = db
+    reservar_questao(session, questao_id, 1, "Juiz Um", "sessao-1")
+    estado = {
+        "question_lock_id": questao_id,
+        "question_lock_owned": False,
+        "question_lock_owner": "Juiz Um",
+    }
+
+    liberada = liberar_reserva_ao_trocar_equipe(
+        session, estado, 1, 2, questao_id, "sessao-2"
+    )
+
+    assert liberada is False
+    assert estado["question_lock_owner"] == "Juiz Um"
+    assert session.query(QuestaoLock).count() == 1

@@ -85,3 +85,28 @@ confirmacao explicita `POSTGRES_TEST_BRANCH_CONFIRMED=1`.
 
 Esses itens devem ser planejados depois do evento de 14/10, com migracoes e
 testes proprios.
+
+## Backlog para o pos-evento
+
+O rastreador de issues deste repositorio esta desabilitado; por isso, estas
+pendencias ficam registradas aqui ate que o projeto escolha outro local de
+acompanhamento. Nao estao implementadas e nao devem atrasar a operacao do evento.
+
+1. **Auditoria de acessos:** registrar acessos de administradores e juizes mesmo
+   quando nao houver julgamento. Definir se serao registrados apenas logins
+   bem-sucedidos ou tambem tentativas falhas, quais metadados sao necessarios e
+   por quanto tempo os registros serao mantidos.
+2. **Auditoria administrativa:** registrar criacao, edicao e exclusao de
+   equipes, juizes, regatas e questoes, incluindo ator, horario, entidade e
+   alteracoes relevantes. Projetar isso sem perder nem sobrescrever o historico
+   existente de correcoes e exclusoes de tentativas.
+3. **Historico por evento:** modelar cada competicao com identificacao, data e
+   local, equipes, juizes, regatas, questoes, tentativas, responsavel pela
+   correcao e horarios. Definir como preservar um retrato do evento quando
+   cadastros forem editados ou removidos depois.
+4. **Relatorios e exportacao:** permitir consultar e exportar resultados por
+   evento, com classificacao, pontuacao, tentativas e dados necessarios para
+   auditoria, sem expor senhas ou outros segredos.
+5. **Backup e restauracao:** definir frequencia, retencao e procedimento de
+   restauracao; testar a recuperacao em um ambiente separado antes de depender
+   dos dados historicos.

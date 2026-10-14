@@ -120,7 +120,7 @@ def test_login_cookie_uses_numeric_max_age(monkeypatch):
     assert calls["cookie"] == "batalha_login"
     assert calls["value"] == "opaque-token"
     assert 0 < calls["options"]["maxAge"] <= 12 * 60 * 60
-    assert "expires" not in calls["options"]
+    assert calls["options"]["expires"].endswith(" GMT")
     assert calls["options"]["secure"] is True
     assert calls["options"]["sameSite"] == "lax"
 

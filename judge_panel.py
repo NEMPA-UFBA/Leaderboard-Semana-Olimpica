@@ -221,7 +221,7 @@ def render_judge_workflow(
                         "Tente novamente depois que ela for liberada."
                     )
                 )
-                lock_owned = reserva["reservada"]
+                _rerun_workflow_fragment()
             mensagem_reserva = st.session_state.get("question_lock_message")
             if mensagem_reserva:
                 st.warning(mensagem_reserva)

@@ -6,6 +6,7 @@ from database import get_db
 from models import AuditLog, User, Equipe, Regata, Questao, Tentativa
 from question_locking import (
     liberar_reserva_ao_sair_da_tela,
+    liberar_reserva_ao_trocar_equipe,
     liberar_reserva_questao,
     renovar_reserva_questao,
     reservar_questao,
@@ -121,7 +122,21 @@ def render_judge_workflow(
 
         equipe_nome = equipes_por_id[equipe_id].nome
         questao_lock_atual = st.session_state.get("question_lock_id")
-        if st.session_state.get("judge_panel_context") != (equipe_id, questao_id):
+        contexto_anterior = st.session_state.get("judge_panel_context")
+        if contexto_anterior != (equipe_id, questao_id):
+            if (
+                contexto_anterior is not None
+                and contexto_anterior[0] != equipe_id
+                and contexto_anterior[1] == questao_id
+            ):
+                liberar_reserva_ao_trocar_equipe(
+                    db,
+                    st.session_state,
+                    contexto_anterior[0],
+                    equipe_id,
+                    questao_id,
+                    session_token,
+                )
             st.session_state["judge_panel_context"] = (equipe_id, questao_id)
             st.session_state.pop("editing_attempt_id", None)
             st.session_state["correction_form_revision"] = (

@@ -1,5 +1,9 @@
+import hashlib
+import logging
 import os
+import time
 from sqlalchemy import DateTime, create_engine, inspect, text
+from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import sessionmaker, DeclarativeBase
 import streamlit as st
 from streamlit.errors import StreamlitSecretNotFoundError
@@ -9,9 +13,20 @@ from dotenv import load_dotenv
 # Carrega as variáveis do .env (se o arquivo existir)
 load_dotenv()
 
+logger = logging.getLogger(__name__)
+
 # Caminho de segurança (fallback) para o SQLite local
 DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data.db")
 FALLBACK_URL = f"sqlite:///{DB_PATH}"
+
+# APP_ENV pode vir do ambiente local ou dos Secrets do Streamlit.
+APP_ENV = os.environ.get("APP_ENV")
+if not APP_ENV:
+    try:
+        APP_ENV = st.secrets.get("APP_ENV")
+    except StreamlitSecretNotFoundError:
+        APP_ENV = None
+APP_ENV = APP_ENV.strip().lower() if isinstance(APP_ENV, str) else None
 
 # 1. Tenta pegar a URL do .env
 DATABASE_URL = os.environ.get("DATABASE_URL")
@@ -22,10 +37,6 @@ if not DATABASE_URL:
         DATABASE_URL = st.secrets.get("DATABASE_URL")
     except StreamlitSecretNotFoundError:
         DATABASE_URL = None
-
-# 3. Se não achar em lugar nenhum, usa o banco local
-if not DATABASE_URL:
-    DATABASE_URL = FALLBACK_URL
 
 def _normalize_database_url(database_url: str) -> str:
     if database_url.startswith("postgres://"):
@@ -39,13 +50,41 @@ def _normalize_database_url(database_url: str) -> str:
     return database_url
 
 
-DATABASE_URL = _normalize_database_url(DATABASE_URL)
+def _resolve_database_url(database_url: str | None, app_env: str | None) -> str:
+    environment = (app_env or "").strip().lower()
+    if not database_url:
+        if environment != "development":
+            raise RuntimeError(
+                "DATABASE_URL nao configurada. Configure PostgreSQL no ambiente "
+                "de producao ou defina APP_ENV=development para usar SQLite local."
+            )
+        return FALLBACK_URL
+
+    normalized_url = _normalize_database_url(database_url)
+    if environment in {"production", "staging"} and normalized_url.startswith("sqlite"):
+        raise RuntimeError(
+            f"APP_ENV={environment} exige PostgreSQL; SQLite local nao e "
+            "persistente nem compartilhado entre instancias."
+        )
+    return normalized_url
+
+
+DATABASE_URL = _resolve_database_url(DATABASE_URL, APP_ENV)
 
 # O argumento "check_same_thread" só existe no SQLite. Se for Postgres, ele quebra.
 if DATABASE_URL.startswith("sqlite"):
     engine = create_engine(DATABASE_URL, connect_args={"check_same_thread": False})
 else:
     engine = create_engine(DATABASE_URL, pool_pre_ping=True)
+
+_target = f"{engine.url.host or 'local'}|{engine.url.port or ''}|{engine.url.database or ''}"
+_target_id = hashlib.sha256(_target.encode("utf-8")).hexdigest()[:12]
+logger.info(
+    "Banco configurado: ambiente=%s backend=%s identificador=%s",
+    APP_ENV or "nao-informado",
+    engine.dialect.name,
+    _target_id,
+)
 
 SessionLocal = sessionmaker(bind=engine, expire_on_commit=False)
 
@@ -241,7 +280,28 @@ def init_db():
 
 
 def get_db():
-    """Create a fresh session. Ensures DB is initialized first."""
+    """Create a fresh session. Ensures DB is initialized first.
+
+    Retries up to 3 times with exponential backoff (1s, 2s, 4s)
+    when the database is unreachable, mitigating Neon cold‑starts.
+    """
     init_db()
-    db = SessionLocal()
-    return db
+    for tentativa in range(3):
+        try:
+            return SessionLocal()
+        except OperationalError:
+            if tentativa < 2:
+                espera = 2 ** tentativa  # 1s, 2s, 4s
+                logger.warning(
+                    "Falha ao criar sessao (tentativa %d/3) — "
+                    "retentando em %ds (possivel cold‑start do Neon).",
+                    tentativa + 1,
+                    espera,
+                )
+                time.sleep(espera)
+                continue
+            logger.error(
+                "Impossivel criar sessao apos 3 tentativas. "
+                "O banco de dados nao esta acessivel."
+            )
+            raise

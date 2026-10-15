@@ -21,6 +21,19 @@ Contas existentes que ainda usam a senha padrao antiga tambem sao obrigadas a
 troca-la antes de acessar o painel. Nunca adicione o valor real da chave a este
 repositorio, a arquivos de exemplo versionados, a logs ou a conversas.
 
+## Banco de dados por ambiente
+
+Em cada aplicativo do Streamlit Community Cloud, configure `APP_ENV` como
+`staging` para treinamento ou `production` para o evento oficial, e `DATABASE_URL`
+com a URL PostgreSQL daquele ambiente. Os valores de teste e producao devem
+apontar para bancos/branches Neon distintos. O app nao usa SQLite como fallback
+em ambientes hospedados e falha explicitamente se a URL estiver ausente ou
+apontar para SQLite.
+
+Para desenvolvimento local sem PostgreSQL, configure `APP_ENV=development`; o
+app pode entao usar `data.db`. Nunca configure esse ambiente local no app de
+producao.
+
 ## Sessao de login
 
 Depois do login, o navegador recebe um token aleatorio com validade de ate 12

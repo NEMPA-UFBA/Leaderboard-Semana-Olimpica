@@ -11,6 +11,8 @@ from question_locking import (
     liberar_reserva_ao_sair_da_tela,
     liberar_reserva_ao_trocar_equipe,
     liberar_reserva_questao,
+    limpar_locks_expirados,
+    obter_ou_renovar_reserva_questao,
     renovar_reserva_questao,
     reservar_questao,
 )
@@ -114,12 +116,18 @@ def test_sair_da_tela_libera_reserva_e_limpa_estado(db):
         "question_lock_session": "sessao-1",
         "question_lock_owned": True,
         "question_lock_owner": "Juiza Um",
+        "judge_feedback": {"mensagem": "feedback antigo"},
+        "judge_panel_context": (1, questao_id),
+        "editing_attempt_id": 10,
     }
 
     liberar_reserva_ao_sair_da_tela(session, estado)
 
     assert "question_lock_id" not in estado
-    assert estado["question_lock_session"] == "sessao-1"
+    assert "question_lock_session" not in estado
+    assert "judge_feedback" not in estado
+    assert "judge_panel_context" not in estado
+    assert "editing_attempt_id" not in estado
     assert session.query(QuestaoLock).count() == 0
     assert reservar_questao(
         session, questao_id, 2, "Juiza Dois", "sessao-2"
@@ -184,3 +192,113 @@ def test_trocar_equipe_nao_libera_reserva_de_outra_sessao(db):
     assert liberada is False
     assert estado["question_lock_owner"] == "Juiz Um"
     assert session.query(QuestaoLock).count() == 1
+
+
+# --- Testes da Fase 1 (novas funcoes) ---
+
+def test_limpar_locks_expirados_remove_apenas_expirados(db):
+    session, questao_id = db
+    agora = datetime.now(timezone.utc)
+
+    # lock ativo — nao deve ser removido
+    session.add(
+        QuestaoLock(
+            questao_id=questao_id,
+            session_token="sessao-ativa",
+            ator_id=1,
+            nome_ator="Juiz Ativo",
+            expires_at=agora + timedelta(minutes=5),
+            updated_at=agora,
+        )
+    )
+    # lock expirado — deve ser removido
+    session.add(
+        QuestaoLock(
+            questao_id=questao_id + 1,
+            session_token="sessao-expirada",
+            ator_id=2,
+            nome_ator="Juiz Fantasma",
+            expires_at=agora - timedelta(seconds=10),
+            updated_at=agora - timedelta(minutes=2),
+        )
+    )
+    session.commit()
+
+    removidos = limpar_locks_expirados(session)
+
+    assert removidos == 1
+    assert session.query(QuestaoLock).count() == 1
+    lock_restante = session.query(QuestaoLock).first()
+    assert lock_restante.session_token == "sessao-ativa"
+
+
+def test_obter_ou_renovar_questao_renova_com_sucesso(db):
+    session, questao_id = db
+    reservar_questao(session, questao_id, 1, "Juiz Um", "sessao-1")
+
+    estado = obter_ou_renovar_reserva_questao(
+        session, questao_id, 1, "Juiz Um", "sessao-1"
+    )
+
+    assert estado["lock_owned"] is True
+    assert estado["lock_owner"] == "Juiz Um"
+    assert estado["lock_lost"] is False
+    assert estado["lock_message"] is None
+    assert estado["expires_at"] is not None
+
+
+def test_obter_ou_renovar_questao_reassume_lock_expirado(db):
+    session, questao_id = db
+    # simulamos um lock expirado de outro juiz
+    session.add(
+        QuestaoLock(
+            questao_id=questao_id,
+            session_token="sessao-antiga",
+            ator_id=2,
+            nome_ator="Juiz Antigo",
+            expires_at=datetime.now(timezone.utc) - timedelta(seconds=1),
+            updated_at=datetime.now(timezone.utc) - timedelta(minutes=2),
+        )
+    )
+    session.commit()
+
+    estado = obter_ou_renovar_reserva_questao(
+        session, questao_id, 1, "Juiz Novo", "sessao-nova"
+    )
+
+    assert estado["lock_owned"] is True
+    assert estado["lock_owner"] == "Juiz Novo"
+    assert estado["lock_lost"] is False
+    assert estado["lock_message"] is None
+
+
+def test_obter_ou_renovar_questao_informa_novo_dono_quando_ocupado(db):
+    session, questao_id = db
+    # lock valido de outro juiz
+    reservar_questao(session, questao_id, 2, "Juiz Dono", "sessao-dono")
+
+    estado = obter_ou_renovar_reserva_questao(
+        session, questao_id, 1, "Juiz Intruso", "sessao-intruso"
+    )
+
+    assert estado["lock_owned"] is False
+    assert estado["lock_owner"] == "Juiz Dono"
+    assert estado["lock_lost"] is True
+    assert "Juiz Dono" in estado["lock_message"]
+
+
+def test_obter_ou_renovar_questao_mesmo_juiz_token_diferente(db):
+    """Mesmo juiz (mesmo ator_id) com token novo reassume via UPSERT."""
+    session, questao_id = db
+    reservar_questao(session, questao_id, 1, "Juiz Um", "sessao-antiga")
+
+    estado = obter_ou_renovar_reserva_questao(
+        session, questao_id, 1, "Juiz Um", "sessao-nova"
+    )
+
+    assert estado["lock_owned"] is True
+    assert estado["lock_owner"] == "Juiz Um"
+    # token antigo nao renova mais
+    assert renovar_reserva_questao(session, questao_id, "sessao-antiga") is False
+    # token novo renova
+    assert renovar_reserva_questao(session, questao_id, "sessao-nova") is True

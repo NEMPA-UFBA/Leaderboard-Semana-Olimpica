@@ -1,3 +1,4 @@
+import logging
 import streamlit as st
 from streamlit.errors import StreamlitInvalidLayoutContextError
 
@@ -8,13 +9,16 @@ from question_locking import (
     liberar_reserva_ao_sair_da_tela,
     liberar_reserva_ao_trocar_equipe,
     liberar_reserva_questao,
-    renovar_reserva_questao,
+    limpar_locks_expirados,
+    obter_ou_renovar_reserva_questao,
     reservar_questao,
 )
 from question_utils import numerar_questoes, ordenar_questoes, rotulo_questao
 from scoring import corrigir_tentativa, excluir_tentativa, registrar_tentativa
 from team_utils import ordenar_equipes
 from time_utils import formatar_horario_do_evento
+
+logger = logging.getLogger(__name__)
 
 
 def _rerun_workflow_fragment() -> None:
@@ -24,11 +28,12 @@ def _rerun_workflow_fragment() -> None:
         st.rerun()
 
 
-@st.fragment
+@st.fragment(run_every="30s")
 def render_judge_workflow(
     session_token: str,
 ) -> None:
     with get_db() as db:
+        limpar_locks_expirados(db)
         authenticated_user = require_auth(["juiz", "admin"])
         account = (
             db.get(User, authenticated_user["id"])
@@ -138,6 +143,7 @@ def render_judge_workflow(
                     session_token,
                 )
             st.session_state["judge_panel_context"] = (equipe_id, questao_id)
+            st.session_state.pop("judge_feedback", None)
             st.session_state.pop("editing_attempt_id", None)
             st.session_state["correction_form_revision"] = (
                 st.session_state.get("correction_form_revision", 0) + 1
@@ -146,25 +152,22 @@ def render_judge_workflow(
         if questao_lock_atual != questao_id:
             if questao_lock_atual is not None:
                 liberar_reserva_questao(db, questao_lock_atual, session_token)
-            reserva = reservar_questao(
-                db,
-                questao_id,
-                user["id"],
-                nome_exibicao,
-                session_token,
-            )
-            st.session_state["question_lock_id"] = questao_id
-            st.session_state["question_lock_owned"] = reserva["reservada"]
-            st.session_state["question_lock_owner"] = (
-                nome_exibicao if reserva["reservada"] else reserva["nome_ator"]
-            )
-            st.session_state["question_lock_lost"] = False
+
+        estado_lock = obter_ou_renovar_reserva_questao(
+            db,
+            questao_id,
+            user["id"],
+            nome_exibicao,
+            session_token,
+        )
+        st.session_state["question_lock_id"] = questao_id
+        st.session_state["question_lock_owned"] = estado_lock["lock_owned"]
+        st.session_state["question_lock_owner"] = estado_lock["lock_owner"]
+        st.session_state["question_lock_lost"] = estado_lock["lock_lost"]
+        if estado_lock["lock_message"]:
+            st.session_state["question_lock_message"] = estado_lock["lock_message"]
+        else:
             st.session_state.pop("question_lock_message", None)
-        elif st.session_state.get("question_lock_owned"):
-            if not renovar_reserva_questao(db, questao_id, session_token):
-                st.session_state["question_lock_owned"] = False
-                st.session_state["question_lock_owner"] = None
-                st.session_state["question_lock_lost"] = True
 
         lock_owned = st.session_state.get("question_lock_owned", False)
         if lock_owned:
@@ -307,28 +310,44 @@ def render_judge_workflow(
                     type="primary",
                     disabled=not lock_owned,
                 ):
-                    result = registrar_tentativa(
-                        db,
-                        equipe_id,
-                        questao_id,
-                        True,
-                        user["id"],
-                        session_token,
-                    )
-                    if "erro" in result:
+                    try:
+                        result = registrar_tentativa(
+                            db,
+                            equipe_id,
+                            questao_id,
+                            True,
+                            user["id"],
+                            session_token,
+                        )
+                        if "erro" in result:
+                            st.session_state["judge_feedback"] = {
+                                "tipo": "erro",
+                                "mensagem": result["erro"],
+                            }
+                        else:
+                            st.session_state["judge_feedback"] = {
+                                "tipo": "sucesso",
+                                "mensagem": (
+                                    f"**{equipe_nome}** — **Questão {numero_questao}** — "
+                                    f"{result['numero']}a tentativa — "
+                                    f"**+{result['pontos']} pontos!**"
+                                ),
+                                "celebrar": True,
+                            }
+                    except Exception:
+                        logger.exception(
+                            "Erro ao registrar tentativa (acerto). "
+                            "equipe=%d questao=%d juiz=%d",
+                            equipe_id,
+                            questao_id,
+                            user["id"],
+                        )
                         st.session_state["judge_feedback"] = {
                             "tipo": "erro",
-                            "mensagem": result["erro"],
-                        }
-                    else:
-                        st.session_state["judge_feedback"] = {
-                            "tipo": "sucesso",
                             "mensagem": (
-                                f"**{equipe_nome}** — **Questão {numero_questao}** — "
-                                f"{result['numero']}a tentativa — "
-                                f"**+{result['pontos']} pontos!**"
+                                "Erro inesperado ao registrar a tentativa. "
+                                "Tente novamente ou recarregue a pagina."
                             ),
-                            "celebrar": True,
                         }
                     _rerun_workflow_fragment()
 
@@ -338,27 +357,43 @@ def render_judge_workflow(
                     use_container_width=True,
                     disabled=not lock_owned,
                 ):
-                    result = registrar_tentativa(
-                        db,
-                        equipe_id,
-                        questao_id,
-                        False,
-                        user["id"],
-                        session_token,
-                    )
-                    if "erro" in result:
+                    try:
+                        result = registrar_tentativa(
+                            db,
+                            equipe_id,
+                            questao_id,
+                            False,
+                            user["id"],
+                            session_token,
+                        )
+                        if "erro" in result:
+                            st.session_state["judge_feedback"] = {
+                                "tipo": "erro",
+                                "mensagem": result["erro"],
+                            }
+                        else:
+                            restantes = 3 - result["numero"]
+                            st.session_state["judge_feedback"] = {
+                                "tipo": "aviso",
+                                "mensagem": (
+                                    f"**{equipe_nome}** — **Questão {numero_questao}** — "
+                                    f"Errou tentativa {result['numero']}. "
+                                    f"Restam {restantes} tentativa(s)."
+                                ),
+                            }
+                    except Exception:
+                        logger.exception(
+                            "Erro ao registrar tentativa (erro). "
+                            "equipe=%d questao=%d juiz=%d",
+                            equipe_id,
+                            questao_id,
+                            user["id"],
+                        )
                         st.session_state["judge_feedback"] = {
                             "tipo": "erro",
-                            "mensagem": result["erro"],
-                        }
-                    else:
-                        restantes = 3 - result["numero"]
-                        st.session_state["judge_feedback"] = {
-                            "tipo": "aviso",
                             "mensagem": (
-                                f"**{equipe_nome}** — **Questão {numero_questao}** — "
-                                f"Errou tentativa {result['numero']}. "
-                                f"Restam {restantes} tentativa(s)."
+                                "Erro inesperado ao registrar a tentativa. "
+                                "Tente novamente ou recarregue a pagina."
                             ),
                         }
                     _rerun_workflow_fragment()
@@ -467,27 +502,40 @@ def render_judge_workflow(
                                 novo_resultado,
                                 session_token,
                             )
+                            if "erro" in result:
+                                st.session_state["judge_feedback"] = {
+                                    "tipo": "erro",
+                                    "mensagem": result["erro"],
+                                }
+                            else:
+                                st.session_state["judge_feedback"] = {
+                                    "tipo": "sucesso",
+                                    "mensagem": (
+                                        f"Resultado da tentativa {tentativa.numero} "
+                                        "atualizado."
+                                    ),
+                                }
+                                st.session_state.pop("editing_attempt_id", None)
+                                st.session_state["correction_form_revision"] += 1
                         except LookupError as error:
                             st.session_state["judge_feedback"] = {
                                 "tipo": "erro",
                                 "mensagem": str(error),
                             }
-                            _rerun_workflow_fragment()
-                        if "erro" in result:
+                        except Exception:
+                            logger.exception(
+                                "Erro ao corrigir tentativa. "
+                                "tentativa=%d juiz=%d",
+                                tentativa.id,
+                                user["id"],
+                            )
                             st.session_state["judge_feedback"] = {
                                 "tipo": "erro",
-                                "mensagem": result["erro"],
-                            }
-                        else:
-                            st.session_state["judge_feedback"] = {
-                                "tipo": "sucesso",
                                 "mensagem": (
-                                    f"Resultado da tentativa {tentativa.numero} "
-                                    "atualizado."
+                                    "Erro inesperado ao corrigir a tentativa. "
+                                    "Tente novamente ou recarregue a pagina."
                                 ),
                             }
-                            st.session_state.pop("editing_attempt_id", None)
-                            st.session_state["correction_form_revision"] += 1
                         _rerun_workflow_fragment()
 
                 if c3.button(
@@ -504,20 +552,33 @@ def render_judge_workflow(
                             user["role"],
                             session_token,
                         )
+                        if result and "erro" in result:
+                            st.session_state["judge_feedback"] = {
+                                "tipo": "erro",
+                                "mensagem": result["erro"],
+                            }
+                        else:
+                            st.session_state["judge_feedback"] = {
+                                "tipo": "sucesso",
+                                "mensagem": "Tentativa excluida.",
+                            }
                     except LookupError as error:
                         st.session_state["judge_feedback"] = {
                             "tipo": "erro",
                             "mensagem": str(error),
                         }
-                        _rerun_workflow_fragment()
-                    if result and "erro" in result:
+                    except Exception:
+                        logger.exception(
+                            "Erro ao excluir tentativa. "
+                            "tentativa=%d juiz=%d",
+                            tentativa.id,
+                            user["id"],
+                        )
                         st.session_state["judge_feedback"] = {
                             "tipo": "erro",
-                            "mensagem": result["erro"],
-                        }
-                    else:
-                        st.session_state["judge_feedback"] = {
-                            "tipo": "sucesso",
-                            "mensagem": "Tentativa excluida.",
+                            "mensagem": (
+                                "Erro inesperado ao excluir a tentativa. "
+                                "Tente novamente ou recarregue a pagina."
+                            ),
                         }
                     _rerun_workflow_fragment()

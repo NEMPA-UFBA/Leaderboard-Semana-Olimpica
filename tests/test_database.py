@@ -26,6 +26,22 @@ def test_normalize_database_url_uses_installed_postgres_driver(url, expected):
     assert database._normalize_database_url(url) == expected
 
 
+def test_missing_database_url_requires_explicit_local_environment():
+    with pytest.raises(RuntimeError, match="DATABASE_URL"):
+        database._resolve_database_url(None, None)
+
+    assert database._resolve_database_url(None, "development") == database.FALLBACK_URL
+    with pytest.raises(RuntimeError, match="DATABASE_URL"):
+        database._resolve_database_url(None, "staging")
+
+
+def test_production_rejects_sqlite_database():
+    with pytest.raises(RuntimeError, match="exige PostgreSQL"):
+        database._resolve_database_url("sqlite:///local.db", "production")
+    with pytest.raises(RuntimeError, match="exige PostgreSQL"):
+        database._resolve_database_url("sqlite:///local.db", "staging")
+
+
 @pytest.fixture
 def isolated_database(monkeypatch):
     engine = create_engine("sqlite:///:memory:")

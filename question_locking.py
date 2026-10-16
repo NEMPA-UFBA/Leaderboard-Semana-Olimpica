@@ -1,14 +1,41 @@
+import logging
+import time
 from datetime import datetime, timedelta, timezone
 from typing import MutableMapping, Any
 
 from sqlalchemy import delete, or_, select, update
 from sqlalchemy.dialects.postgresql import insert as postgresql_insert
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
+from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import Session
 
 from models import QuestaoLock
 
+logger = logging.getLogger(__name__)
+
 RESERVA_DURACAO = timedelta(seconds=90)
+
+
+def limpar_locks_expirados(db: Session) -> int:
+    """Remove todos os locks expirados da tabela questao_locks.
+
+    Deve ser chamada periodicamente (ex: no inicio de cada ciclo do fragmento
+    do juiz) para evitar acumulo de registros zumbis deixados por juizes que
+    fecharam o navegador ou perderam a conexao sem liberar o lock.
+    """
+    agora = datetime.now(timezone.utc)
+    resultado = db.execute(
+        delete(QuestaoLock).where(QuestaoLock.expires_at <= agora)
+    )
+    db.commit()
+    if resultado.rowcount:
+        logger.info(
+            "LOCK | vassoura | LIMPOU %d lock(s) expirado(s).",
+            resultado.rowcount,
+        )
+    else:
+        logger.debug("LOCK | vassoura | nenhum lock expirado encontrado.")
+    return resultado.rowcount
 
 
 def reservar_questao(
@@ -17,8 +44,14 @@ def reservar_questao(
     ator_id: int,
     nome_ator: str,
     session_token: str,
+    force: bool = False,
 ) -> dict:
     agora = datetime.now(timezone.utc)
+    logger.info(
+        "LOCK | reservar_questao | INICIO | questao=%d juiz_id=%d nome=%s "
+        "session=%s force=%s",
+        questao_id, ator_id, nome_ator, session_token[:8], force,
+    )
     valores = {
         "questao_id": questao_id,
         "session_token": session_token,
@@ -37,28 +70,38 @@ def reservar_questao(
             f"Reservas de questoes nao suportam o banco {dialeto}."
         )
 
-    resultado = db.execute(
-        inserir.values(**valores)
-        .on_conflict_do_update(
-            index_elements=[QuestaoLock.questao_id],
-            set_={
-                "session_token": session_token,
-                "ator_id": ator_id,
-                "nome_ator": nome_ator,
-                "expires_at": valores["expires_at"],
-                "updated_at": agora,
-            },
-            where=or_(
-                QuestaoLock.session_token == session_token,
-                QuestaoLock.ator_id == ator_id,
-                QuestaoLock.expires_at <= agora,
-            ),
+    upsert_options = {
+        "index_elements": [QuestaoLock.questao_id],
+        "set_": {
+            "session_token": session_token,
+            "ator_id": ator_id,
+            "nome_ator": nome_ator,
+            "expires_at": valores["expires_at"],
+            "updated_at": agora,
+        },
+    }
+    if not force:
+        # A condição entra como argumento `where` de on_conflict_do_update,
+        # pois objetos `Insert` não possuem o método `.where()`.
+        upsert_options["where"] = or_(
+            QuestaoLock.session_token == session_token,
+            QuestaoLock.ator_id == ator_id,
+            QuestaoLock.expires_at <= agora,
         )
-        .returning(QuestaoLock.session_token)
+
+    upsert = inserir.values(**valores).on_conflict_do_update(**upsert_options)
+
+    resultado = db.execute(
+        upsert.returning(QuestaoLock.session_token)
     ).scalar_one_or_none()
 
     db.commit()
     if resultado == session_token:
+        logger.info(
+            "LOCK | reservar_questao | SUCESSO | questao=%d juiz_id=%d nome=%s "
+            "expira=%s",
+            questao_id, ator_id, nome_ator, valores["expires_at"],
+        )
         return {
             "reservada": True,
             "nome_ator": nome_ator,
@@ -70,7 +113,17 @@ def reservar_questao(
     ).scalar_one_or_none()
     db.commit()
     if reserva is None:
+        logger.warning(
+            "LOCK | reservar_questao | BLOQUEADO | questao=%d juiz_id=%d "
+            "nenhum lock encontrado apos upsert (race condition?)",
+            questao_id, ator_id,
+        )
         return {"reservada": False, "nome_ator": None, "expires_at": None}
+    logger.warning(
+        "LOCK | reservar_questao | BLOQUEADO | questao=%d juiz_id=%d "
+        "dono_atual='%s' (id=%d) expira=%s",
+        questao_id, ator_id, reserva.nome_ator, reserva.ator_id, reserva.expires_at,
+    )
     return {
         "reservada": False,
         "nome_ator": reserva.nome_ator,
@@ -78,28 +131,223 @@ def reservar_questao(
     }
 
 
+def forcar_assuncao_lock(
+    db: Session,
+    questao_id: int,
+    ator_id: int,
+    nome_ator: str,
+    session_token: str,
+) -> dict:
+    """Forca a assuncao do lock, ignorando dono anterior e expiracao.
+
+    Diferente de reservar_questao(), esta funcao sobrescreve o lock
+    INCONDICIONALMENTE, sem verificar session_token, ator_id ou
+    expires_at.  Deve ser usada apenas pelo botao \"Assumir Questao\"
+    quando o juiz precisa tomar o controle imediatamente.
+    """
+    logger.warning(
+        "LOCK | OVERRIDE | INICIO | questao=%d juiz_id=%d nome=%s "
+        "session=%s",
+        questao_id, ator_id, nome_ator, session_token[:8],
+    )
+    resultado = reservar_questao(
+        db, questao_id, ator_id, nome_ator, session_token, force=True
+    )
+    if resultado["reservada"]:
+        logger.warning(
+            "LOCK | OVERRIDE | SUCESSO | questao=%d novo_dono='%s' (id=%d) "
+            "expira=%s",
+            questao_id, nome_ator, ator_id, resultado["expires_at"],
+        )
+    else:
+        logger.error(
+            "LOCK | OVERRIDE | FALHOU | questao=%d juiz_id=%d "
+            "(upsert incondicional retornou sem sucesso — "
+            "verificar constraint ou dialecto)",
+            questao_id, ator_id,
+        )
+    return resultado
+
+
 def renovar_reserva_questao(
     db: Session, questao_id: int, session_token: str
-) -> bool:
+) -> tuple[bool, datetime | None]:
+    """Renova a reserva por mais RESERVA_DURACAO segundos.
+
+    Tenta ate 3 vezes com intervalo de 1 segundo em caso de falha
+    transiente de conexao (OperationalError), mitigando cold‑starts
+    e micro‑desconexoes do Neon.
+
+    Retorna (True, novo_expires_at) em caso de sucesso ou
+    (False, None) em caso de falha.
+    """
     agora = datetime.now(timezone.utc)
-    resultado = db.execute(
-        update(QuestaoLock)
-        .where(
-            QuestaoLock.questao_id == questao_id,
-            QuestaoLock.session_token == session_token,
-        )
-        .values(
-            expires_at=agora + RESERVA_DURACAO,
-            updated_at=agora,
-        )
+    novo_expires_at = agora + RESERVA_DURACAO
+    for tentativa in range(3):
+        try:
+            resultado = db.execute(
+                update(QuestaoLock)
+                .where(
+                    QuestaoLock.questao_id == questao_id,
+                    QuestaoLock.session_token == session_token,
+                )
+                .values(
+                    expires_at=novo_expires_at,
+                    updated_at=agora,
+                )
+            )
+            db.commit()
+            if resultado.rowcount == 1:
+                logger.info(
+                    "LOCK | renovar_reserva | SUCESSO | questao=%d session=%s "
+                    "novo_expira=%s",
+                    questao_id, session_token[:8], novo_expires_at,
+                )
+                return True, novo_expires_at
+            logger.warning(
+                "LOCK | renovar_reserva | FALHOU | questao=%d session=%s "
+                "(session_token nao e mais o dono)",
+                questao_id, session_token[:8],
+            )
+            return False, None
+        except OperationalError:
+            db.rollback()
+            if tentativa < 2:
+                logger.warning(
+                    "Renovacao de lock falhou (tentativa %d/3) — "
+                    "retentando em 1s. questao=%d session=%s",
+                    tentativa + 1,
+                    questao_id,
+                    session_token[:8],
+                )
+                time.sleep(1)
+            else:
+                logger.error(
+                    "Renovacao de lock esgotada apos 3 tentativas. "
+                    "questao=%d session=%s",
+                    questao_id,
+                    session_token[:8],
+                )
+    return False, None
+
+
+def obter_ou_renovar_reserva_questao(
+    db: Session,
+    questao_id: int,
+    ator_id: int,
+    nome_ator: str,
+    session_token: str,
+) -> dict:
+    """Tenta renovar o lock; se falhar, tenta reassumi-lo automaticamente.
+
+    Retorna um dicionario com as chaves prontas para serem aplicadas ao
+    st.session_state do Streamlit:
+
+    - lock_owned (bool):       se o juiz atual detem o lock
+    - lock_owner (str|None):   nome de quem detem o lock (o proprio ou outro)
+    - lock_lost (bool):        True se o lock foi perdido para outro juiz
+    - lock_message (str|None): mensagem para exibir ao juiz
+    - expires_at (datetime|None): instante de expiracao do lock atual
+
+    Se a renovacao falhar por expiracao (ninguem reassumiu), tenta um
+    reservar_questao() imediatamente.  Se outro juiz ja detem o lock,
+    retorna os dados desse juiz para que a UI possa informa-lo.
+    """
+    logger.info(
+        "LOCK | obter_ou_renovar | INICIO | questao=%d juiz_id=%d nome=%s session=%s",
+        questao_id, ator_id, nome_ator, session_token[:8],
     )
-    db.commit()
-    return resultado.rowcount == 1
+    # 1. Tentar renovar (com retry interno para OperationalError)
+    renovada, expires_at = renovar_reserva_questao(
+        db, questao_id, session_token
+    )
+    if renovada:
+        logger.info(
+            "LOCK | obter_ou_renovar | RENOVADO | questao=%d juiz=%s "
+            "expira=%s",
+            questao_id, nome_ator, expires_at,
+        )
+        return {
+            "lock_owned": True,
+            "lock_owner": nome_ator,
+            "lock_lost": False,
+            "lock_message": None,
+            "expires_at": expires_at,
+        }
+
+    # 2. Renovacao falhou — tentar reassumir o lock
+    try:
+        resultado = reservar_questao(
+            db, questao_id, ator_id, nome_ator, session_token
+        )
+    except Exception:
+        logger.exception(
+            "Falha ao tentar reassumir lock. questao=%d session=%s",
+            questao_id,
+            session_token[:8],
+        )
+        return {
+            "lock_owned": False,
+            "lock_owner": None,
+            "lock_lost": True,
+            "lock_message": (
+                "Erro de conexao ao verificar a reserva. "
+                "O sistema tentara novamente em instantes."
+            ),
+            "expires_at": None,
+        }
+
+    if resultado["reservada"]:
+        logger.info(
+            "LOCK | obter_ou_renovar | REASSUMIDO | questao=%d juiz=%s "
+            "expira=%s",
+            questao_id, nome_ator, resultado["expires_at"],
+        )
+        return {
+            "lock_owned": True,
+            "lock_owner": nome_ator,
+            "lock_lost": False,
+            "lock_message": None,
+            "expires_at": resultado["expires_at"],
+        }
+
+    # 3. Nao foi possivel reassumir — lock pertence a outro ou esta livre
+    if resultado["nome_ator"]:
+        logger.warning(
+            "LOCK | obter_ou_renovar | OCUPADO | questao=%d juiz=%s "
+            "dono_atual='%s' expira=%s",
+            questao_id, nome_ator, resultado["nome_ator"], resultado["expires_at"],
+        )
+        return {
+            "lock_owned": False,
+            "lock_owner": resultado["nome_ator"],
+            "lock_lost": True,
+            "lock_message": (
+                f"Questao reservada por {resultado['nome_ator']}. "
+                "Clique em 'Tentar reassumir' para verificar se foi liberada."
+            ),
+            "expires_at": resultado["expires_at"],
+        }
+
+    return {
+        "lock_owned": False,
+        "lock_owner": None,
+        "lock_lost": True,
+        "lock_message": (
+            "A reserva expirou e nao foi possivel reassumi-la. "
+            "Tente novamente ou recarregue a pagina."
+        ),
+        "expires_at": None,
+    }
 
 
 def liberar_reserva_questao(
     db: Session, questao_id: int, session_token: str
 ) -> bool:
+    logger.info(
+        "LOCK | liberar_reserva | INICIO | questao=%d session=%s",
+        questao_id, session_token[:8],
+    )
     resultado = db.execute(
         delete(QuestaoLock).where(
             QuestaoLock.questao_id == questao_id,
@@ -107,7 +355,18 @@ def liberar_reserva_questao(
         )
     )
     db.commit()
-    return resultado.rowcount == 1
+    if resultado.rowcount == 1:
+        logger.info(
+            "LOCK | liberar_reserva | SUCESSO | questao=%d session=%s",
+            questao_id, session_token[:8],
+        )
+        return True
+    logger.warning(
+        "LOCK | liberar_reserva | FALHOU | questao=%d session=%s "
+        "(session_token nao e dono ou lock ja removido)",
+        questao_id, session_token[:8],
+    )
+    return False
 
 
 def liberar_reserva_ao_trocar_equipe(
@@ -143,9 +402,13 @@ def liberar_reserva_ao_sair_da_tela(
 
     for chave in (
         "question_lock_id",
+        "question_lock_session",
         "question_lock_owned",
         "question_lock_owner",
         "question_lock_lost",
         "question_lock_message",
+        "judge_feedback",
+        "judge_panel_context",
+        "editing_attempt_id",
     ):
         session_state.pop(chave, None)

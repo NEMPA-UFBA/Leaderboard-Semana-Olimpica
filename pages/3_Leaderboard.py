@@ -9,10 +9,14 @@ db_saida = get_db()
 liberar_reserva_ao_sair_da_tela(db_saida, st.session_state)
 db_saida.close()
 
+if st.session_state.pop("leaderboard_dirty", False):
+    st.rerun()
+
 
 @st.fragment(run_every=4)
 def leaderboard_fragment():
     db = get_db()
+    db.commit()
 
     ranking = calcular_leaderboard(db)
 

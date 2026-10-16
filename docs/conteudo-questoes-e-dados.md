@@ -39,11 +39,10 @@ Os enunciados sao guardados na tabela `questoes` do banco configurado para o
 app. As imagens enviadas no painel sao gravadas como dados binarios na coluna
 `questoes.imagem`; o nome original fica em `questoes.imagem_filename`.
 
-Sem `DATABASE_URL`, o banco local e `data.db`, ao lado de `database.py`. Esse
-arquivo e ignorado pelo Git e nao e enviado junto com o codigo. Com
-`DATABASE_URL` configurada, o app local usa o banco PostgreSQL indicado pela URL;
-nesse caso, os dados gravados localmente sao persistidos no Neon e nao no
-`data.db`.
+No desenvolvimento local, `data.db` e usado somente quando `APP_ENV=development`
+e `DATABASE_URL` nao esta configurada. Esse arquivo e ignorado pelo Git e nao e
+enviado junto com o codigo. Com `DATABASE_URL` configurada, o app usa o banco
+indicado pela URL.
 
 No Streamlit Community Cloud, arquivos criados durante a execucao ficam no
 filesystem local do app e nao sao armazenamento persistente garantido entre
@@ -52,6 +51,12 @@ ciclos, use um banco externo gerenciado; mantenha as imagens nesse banco ou em
 um armazenamento de objetos persistente. Consulte a documentacao oficial sobre
 [organizacao de arquivos no Community Cloud](https://docs.streamlit.io/deploy/streamlit-community-cloud/deploy-your-app/file-organization)
 e [Markdown no Streamlit](https://docs.streamlit.io/develop/api-reference/text/st.markdown).
+No app de treinamento, configure `APP_ENV=staging`; no app oficial, configure
+`APP_ENV=production`. Ambos precisam de `DATABASE_URL` nos Secrets apontando
+para suas respectivas bases PostgreSQL. O app recusa iniciar sem a URL ou quando
+o ambiente hospedado aponta para SQLite. Os logs registram o backend e um
+identificador opaco do banco, sem registrar a URL ou a senha, para ajudar a
+confirmar que teste e producao usam bancos distintos.
 
 ## Catalogo privado e seed seletivo
 

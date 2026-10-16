@@ -71,8 +71,10 @@ def test_juiz_pode_assumir_reserva_de_uma_sessao_anterior(db):
 
     assert primeira["reservada"] is True
     assert assumida["reservada"] is True
-    assert renovar_reserva_questao(session, questao_id, "sessao-antiga") is False
-    assert renovar_reserva_questao(session, questao_id, "sessao-atual") is True
+    renovada, _ = renovar_reserva_questao(session, questao_id, "sessao-antiga")
+    assert renovada is False
+    renovada, _ = renovar_reserva_questao(session, questao_id, "sessao-atual")
+    assert renovada is True
 
 
 def test_reserva_pode_ser_renovada_e_tem_expiracao_curta(db):
@@ -81,8 +83,11 @@ def test_reserva_pode_ser_renovada_e_tem_expiracao_curta(db):
         session, questao_id, 1, "Juiza Um", "sessao-1"
     )
     assert reserva["expires_at"] > datetime.now(timezone.utc)
-    assert renovar_reserva_questao(session, questao_id, "sessao-1") is True
-    assert renovar_reserva_questao(session, questao_id, "sessao-2") is False
+    renovada, novo_exp = renovar_reserva_questao(session, questao_id, "sessao-1")
+    assert renovada is True
+    assert novo_exp is not None
+    renovada, _ = renovar_reserva_questao(session, questao_id, "sessao-2")
+    assert renovada is False
     assert RESERVA_DURACAO == timedelta(seconds=90)
 
 
@@ -299,6 +304,9 @@ def test_obter_ou_renovar_questao_mesmo_juiz_token_diferente(db):
     assert estado["lock_owned"] is True
     assert estado["lock_owner"] == "Juiz Um"
     # token antigo nao renova mais
-    assert renovar_reserva_questao(session, questao_id, "sessao-antiga") is False
+    renovada, _ = renovar_reserva_questao(session, questao_id, "sessao-antiga")
+    assert renovada is False
     # token novo renova
-    assert renovar_reserva_questao(session, questao_id, "sessao-nova") is True
+    renovada, novo_exp = renovar_reserva_questao(session, questao_id, "sessao-nova")
+    assert renovada is True
+    assert novo_exp is not None

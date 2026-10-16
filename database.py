@@ -188,7 +188,18 @@ def init_db():
     from models import User
     from auth import hash_password, password_validation_error, verify_password
 
-    Base.metadata.create_all(bind=engine)
+    try:
+        Base.metadata.create_all(bind=engine)
+    except OperationalError:
+        raise RuntimeError(
+            "Nao foi possivel conectar ao banco de dados Neon.\n\n"
+            "Causas provaveis:\n"
+            "  • Quota do plano gratuito excedida — aguarde o reset ou "
+            "fac,a upgrade no Neon.\n"
+            "  • Cold‑start demorado — tente novamente em alguns segundos.\n\n"
+            "Para testar localmente sem Neon, defina APP_ENV=development "
+            "no arquivo .env e o sistema usara SQLite local."
+        ) from None
     _ensure_user_password_migration()
     _ensure_user_name_migration()
 
@@ -283,13 +294,21 @@ def get_db():
     """Create a fresh session. Ensures DB is initialized first.
 
     Retries up to 3 times with exponential backoff (1s, 2s, 4s)
-    when the database is unreachable, mitigating Neon cold‑starts.
+    for transient connection failures (cold‑starts).  Skips retry
+    for permanent errors such as quota exceeded.
     """
     init_db()
     for tentativa in range(3):
         try:
             return SessionLocal()
-        except OperationalError:
+        except OperationalError as exc:
+            msg = str(exc).lower()
+            if "quota" in msg or "exceeded" in msg or "limit" in msg:
+                logger.error(
+                    "Erro permanente do Neon (quota/limite): %s",
+                    exc,
+                )
+                raise
             if tentativa < 2:
                 espera = 2 ** tentativa  # 1s, 2s, 4s
                 logger.warning(

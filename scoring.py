@@ -123,6 +123,16 @@ def registrar_tentativa(
             )
             db.commit()
 
+            logger.info(
+                "Tentativa registrada: equipe=%d questao=%d "
+                "numero=%d acertou=%s pontos=%d juiz=%d",
+                equipe_id,
+                questao_id,
+                numero,
+                acertou,
+                pontos,
+                juiz_id,
+            )
             return {
                 "numero": numero,
                 "acertou": acertou,
@@ -201,7 +211,12 @@ def calcular_leaderboard(db: Session) -> list[dict]:
     if db.query(Tentativa.id).first() is None:
         results.sort(key=lambda item: chave_ordenacao_equipe(item[0]))
 
-    return [{"equipe": nome, "pontos": pontos} for nome, pontos in results]
+    ranking = [{"equipe": nome, "pontos": pontos} for nome, pontos in results]
+    logger.info(
+        "Leaderboard calculado: %d equipes no ranking.",
+        len(ranking),
+    )
+    return ranking
 
 
 def corrigir_tentativa(

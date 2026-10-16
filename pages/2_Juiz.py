@@ -32,6 +32,12 @@ if "question_lock_session" not in st.session_state:
     st.session_state["question_lock_session"] = uuid4().hex
 session_token = st.session_state["question_lock_session"]
 
+# Garante que as chaves dos selectboxes nunca fiquem indefinidas,
+# prevenindo reset silencioso para index 0 durante auto-refresh do fragmento.
+for key in ("juiz_equipe_id", "juiz_questao_id"):
+    if key not in st.session_state:
+        st.session_state[key] = None
+
 st.markdown(
     """
     <style>
